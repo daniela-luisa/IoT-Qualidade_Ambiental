@@ -1,4 +1,4 @@
-# Projeto IoT - Grupo 8 - Monitoramento Ambiental para Crescimento de Plantas
+# Projeto IoT - Grupo 5 - Monitoramento Ambiental para Crescimento de Plantas
 
 ## Integrantes
 
@@ -11,7 +11,7 @@
 
 ## Família temática
 
-Grupo 8 - Qualidade Ambiental.
+Grupo 5 - Qualidade Ambiental.
 
 Construção de uma pequena estação ambiental conectada, que mede variáveis do ambiente relevantes para o crescimento de plantas, classifica a condição do local e sinaliza a condição por LED e buzzer.
 
@@ -50,7 +50,7 @@ Construir um dispositivo com ESP32 que:
 
 ## Protótipo do produto
 
-[inserir imagem do protótipo aqui]
+![Protótipo simulado no Wokwi](docs/prototipo_wokwi.jpeg)
 
 Circuito simulado no Wokwi, com o ESP32 conectado aos sensores e atuadores via protoboard, seguindo a pinagem definida: DHT22 no GPIO14, sensor de solo e LDR nos pinos ADC1 (GPIO34 e GPIO35), buzzer no GPIO25 e LED (com resistor em série) no GPIO26.
 
@@ -63,26 +63,26 @@ Circuito simulado no Wokwi, com o ESP32 conectado aos sensores e atuadores via p
 - **Buzzer**: no protótipo é ligado diretamente ao GPIO25; dependendo do modelo real (ativo ou passivo), pode ser necessário um transistor ou resistor adicional.
 
 ## Arquitetura específica
-
-[inserir imagem do diagrama de arquitetura aqui]
+\
+![Arquitetura do projeto](docs/arquitetura.png)
 
 O ESP32 lê os três sensores (DHT22 via pino digital; solo e LDR via ADC1), classifica a condição da planta e publica telemetria em quatro tópicos MQTT:
 
 ```
-grupo8/sensor/temperatura
-grupo8/sensor/umidade_ar
-grupo8/sensor/umidade_solo
-grupo8/sensor/luminosidade
+grupo5/sensor/temperatura
+grupo5/sensor/umidade_ar
+grupo5/sensor/umidade_solo
+grupo5/sensor/luminosidade
 ```
 
 Ao mesmo tempo, assina dois tópicos de comando:
 
 ```
-grupo8/comando/led
-grupo8/comando/buzzer
+grupo5/comando/led
+grupo5/comando/buzzer
 ```
 
-Ao receber um comando, o firmware aciona o atuador correspondente (LED ou buzzer) e publica a confirmação do estado em um tópico de status (grupo8/status/...).
+Ao receber um comando, o firmware aciona o atuador correspondente (LED ou buzzer) e publica a confirmação do estado em um tópico de status (grupo5/status/...).
 
 ## Backlog reescrito
 
