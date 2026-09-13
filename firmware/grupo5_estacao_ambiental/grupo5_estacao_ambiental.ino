@@ -1,5 +1,5 @@
 /*
-  Projeto IoT - Grupo 8 - Monitoramento Ambiental para Crescimento de Plantas
+  Projeto IoT - Grupo 5 - Monitoramento Ambiental para Crescimento de Plantas
 
   Pinagem usada (ver documento de aprofundamento):
     DHT22 (temp/umidade do ar) -> GPIO14
@@ -9,18 +9,16 @@
     LED (com resistor)         -> GPIO26
 
   Topicos MQTT:
-    Publica:  grupo8/sensor/temperatura
-              grupo8/sensor/umidade_ar
-              grupo8/sensor/umidade_solo
-              grupo8/sensor/luminosidade
-              grupo8/status/led
-              grupo8/status/buzzer
-    Assina:   grupo8/comando/led      (payload: "on" ou "off")
-              grupo8/comando/buzzer   (payload: "on" ou "off")
+    Publica:  grupo5/sensor/temperatura
+              grupo5/sensor/umidade_ar
+              grupo5/sensor/umidade_solo
+              grupo5/sensor/luminosidade
+              grupo5/status/led
+              grupo5/status/buzzer
+              grupo5/status/condicao
+    Assina:   grupo5/comando/led      (payload: "on" ou "off")
+              grupo5/comando/buzzer   (payload: "on" ou "off")
 
-  Este e um esqueleto inicial para teste no simulador Wokwi.
-  Ajustem os limiares de classificacao (SOIL_SECO, LIGHT_ESCURO etc.)
-  depois de calibrar os sensores reais.
 */
 
 #include <WiFi.h>
@@ -33,7 +31,7 @@ const char* WIFI_PASSWORD = "";
 
 const char* MQTT_BROKER = "broker.hivemq.com"; // broker publico de testes
 const int   MQTT_PORT   = 1883;
-const char* MQTT_CLIENT_ID = "grupo8-esp32";
+const char* MQTT_CLIENT_ID = "grupo5-esp32";
 
 // ---------- Pinos ----------
 #define DHTPIN   14
@@ -44,14 +42,15 @@ const char* MQTT_CLIENT_ID = "grupo8-esp32";
 #define LED_PIN    26
 
 // ---------- Topicos ----------
-const char* TOPIC_TEMP        = "grupo8/sensor/temperatura";
-const char* TOPIC_UMID_AR     = "grupo8/sensor/umidade_ar";
-const char* TOPIC_UMID_SOLO   = "grupo8/sensor/umidade_solo";
-const char* TOPIC_LUMINOSIDADE = "grupo8/sensor/luminosidade";
-const char* TOPIC_CMD_LED     = "grupo8/comando/led";
-const char* TOPIC_CMD_BUZZER  = "grupo8/comando/buzzer";
-const char* TOPIC_STATUS_LED    = "grupo8/status/led";
-const char* TOPIC_STATUS_BUZZER = "grupo8/status/buzzer";
+const char* TOPIC_TEMP        = "grupo5/sensor/temperatura";
+const char* TOPIC_UMID_AR     = "grupo5/sensor/umidade_ar";
+const char* TOPIC_UMID_SOLO   = "grupo5/sensor/umidade_solo";
+const char* TOPIC_LUMINOSIDADE = "grupo5/sensor/luminosidade";
+const char* TOPIC_CMD_LED     = "grupo5/comando/led";
+const char* TOPIC_CMD_BUZZER  = "grupo5/comando/buzzer";
+const char* TOPIC_STATUS_LED    = "grupo5/status/led";
+const char* TOPIC_STATUS_BUZZER = "grupo5/status/buzzer";
+const char* TOPIC_STATUS_CONDICAO = "grupo5/status/condicao";
 
 // ---------- Limiares (ajustar apos calibracao real) ----------
 const int SOIL_SECO_MAX   = 1500;  // abaixo disso = solo seco (ADC bruto, 0-4095)
@@ -64,10 +63,15 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 unsigned long ultimaLeitura = 0;
-const unsigned long INTERVALO_LEITURA = 5000; // 5 segundos
+const unsigned long INTERVALO_LEITURA = 1000; // 1 segundo
 
 bool ledLigado = false;
 bool buzzerLigado = false;
+
+// ---------- Controle do desligamento automatico ----------
+unsigned long ledLigadoEm = 0;
+unsigned long buzzerLigadoEm = 0;
+const unsigned long DURACAO_ALERTA = 5000; // 5 segundos ligado, ajustar se quiser
 
 // ---------- Wi-Fi ----------
 void conectarWiFi() {
@@ -99,12 +103,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if (String(topic) == TOPIC_CMD_LED) {
     ledLigado = (mensagem == "on");
     digitalWrite(LED_PIN, ledLigado ? HIGH : LOW);
+    if (ledLigado) ledLigadoEm = millis();
     client.publish(TOPIC_STATUS_LED, ledLigado ? "on" : "off");
   }
 
   if (String(topic) == TOPIC_CMD_BUZZER) {
     buzzerLigado = (mensagem == "on");
-    digitalWrite(BUZZER_PIN, buzzerLigado ? HIGH : LOW);
+    if (buzzerLigado) {
+      tone(BUZZER_PIN, 1000); // gera um tom de 1000Hz
+      buzzerLigadoEm = millis();
+    } else {
+      noTone(BUZZER_PIN);
+    }
     client.publish(TOPIC_STATUS_BUZZER, buzzerLigado ? "on" : "off");
   }
 }
@@ -167,16 +177,11 @@ void lerEPublicarSensores() {
   client.publish(TOPIC_UMID_SOLO, String(soloRaw).c_str());
   client.publish(TOPIC_LUMINOSIDADE, String(luzRaw).c_str());
 
-  // Alerta automatico (sem depender so de comando manual)
-  if (condicao == "inadequado") {
-    digitalWrite(BUZZER_PIN, HIGH);
-    digitalWrite(LED_PIN, HIGH);
-    buzzerLigado = true;
-    ledLigado = true;
-  } else {
-    digitalWrite(BUZZER_PIN, LOW);
-    buzzerLigado = false;
-  }
+  // A decisao de acionar o atuador nao acontece mais aqui.
+  // O firmware so publica a classificacao; quem decide ligar o
+  // LED/buzzer a partir dela e algo de fora, pelo MQTT (ver nota
+  // de arquitetura no topo do arquivo).
+  client.publish(TOPIC_STATUS_CONDICAO, condicao.c_str());
 }
 
 void setup() {
@@ -200,6 +205,20 @@ void loop() {
     reconectarMQTT();
   }
   client.loop();
+
+  // Desliga o LED sozinho apos DURACAO_ALERTA
+  if (ledLigado && millis() - ledLigadoEm >= DURACAO_ALERTA) {
+    ledLigado = false;
+    digitalWrite(LED_PIN, LOW);
+    client.publish(TOPIC_STATUS_LED, "off");
+  }
+
+  // Desliga o buzzer sozinho apos DURACAO_ALERTA
+  if (buzzerLigado && millis() - buzzerLigadoEm >= DURACAO_ALERTA) {
+    buzzerLigado = false;
+    noTone(BUZZER_PIN);
+    client.publish(TOPIC_STATUS_BUZZER, "off");
+  }
 
   unsigned long agora = millis();
   if (agora - ultimaLeitura >= INTERVALO_LEITURA) {
