@@ -123,6 +123,37 @@ pip install paho-mqtt
 python backend/decisor.py
 ```
 
+## Estado atual e direção do upgrade (CP12 → N3)
+
+**Estado atual:** estação com 1 ESP32, 3 sensores (DHT11, solo e luminosidade com saída digital), LED e buzzer, telemetria MQTT e um backend de decisão em Python que fecha o ciclo comando → atuador → confirmação. Ainda **não** há banco de dados, histórico, interface web, login, broker próprio, orquestração, testes automatizados nem OTA, e o broker usado é público.
+
+**Para onde o upgrade está indo (N3):** transformar o protótipo em um produto completo — o hardware mede, a rede transporta, o backend valida, decide e guarda, a interface informa e o usuário comanda, com confirmação do dispositivo. O piso da N3 (R1–R18) está conferido, requisito por requisito, no documento do CP12.
+
+| Camada | Na N1 | Na N3 (proposta) |
+|---|---|---|
+| Hardware | 1 ESP32, sensores digitais, LED e buzzer | 2 nós ESP32 (`estacao-01` e `estacao-02`), sensor de solo analógico (ADC1) e atuador de irrigação (bomba + relé) além de LED/buzzer |
+| Firmware | Leitura com `millis()`, reconexão bloqueante, sem configuração persistente | Laço não bloqueante, regra local sem rede, estado seguro, configuração em NVS, `deviceId`, LWT e OTA |
+| MQTT | Broker público, payloads em texto puro | Mosquitto próprio com TLS, JSON versionado, `CONTRATOS.md` |
+| Backend | Script `decisor` com interface de desktop | API que valida o contrato, regras remotas e comandos com `commandId` |
+| Banco | Não existia | PostgreSQL (medições, comandos, usuários) |
+| Interface | Cliente MQTT / log do script | Aplicação web com login, histórico, online/offline, alertas, comando e painel analítico |
+| Operação | Execução manual | Docker Compose, notificação por Telegram, perfis de usuário, testes e CI |
+
+### Arquitetura-alvo (N3)
+
+![Arquitetura-alvo](docs/arquitetura_alvo.png)
+
+![Fluxo do dado](docs/fluxo_dado.png)
+
+![Fluxo do comando](docs/fluxo_comando.png)
+
+### Documentos do upgrade
+
+- `CP12_EQUIPE-5_PARCIAL.pdf` — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026.
+- As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) entram na entrega completa de 27/10/2026.
+
+> Instruções completas de instalação e execução (README do R11) serão adicionadas até a N3 (01/12/2026).
+
 ## Backlog atualizado
 
 | Tarefa | Responsável | Status |
@@ -149,9 +180,11 @@ python backend/decisor.py
 | Corrigir `DURACAO_ALERTA` para o alerta ficar contínuo | Daniela | Feito |
 | Implementar backend de decisão automática (`backend/decisor.py`) | Daniela | Feito |
 | Montar circuito completo em protoboard | Marcelo | Feito |
-| Validar sensores + backend rodando juntos no protótipo físico | Todos | A fazer |
-| Trocar Wi-Fi de teste pela rede real do dia da apresentação | João | A fazer |
-| Testar demonstração funcional de ponta a ponta no hardware físico | João | A fazer |
+| Validar sensores + backend rodando juntos no protótipo físico | Todos | feito |
+| Trocar Wi-Fi de teste pela rede real do dia da apresentação | João | feito |
+| Testar demonstração funcional de ponta a ponta no hardware físico | João | feito |
+| CP12 — seções 1 a 4 (PDF + repositório atualizado) | Todos | Feito |
+| CP12 — seções 5 a 9 (hardware calculado, fluxograma, contrato v1, tecnologias, cronograma) | Todos | A fazer (até 27/10) |
 
 ## Riscos técnicos
 
@@ -162,7 +195,3 @@ Os módulos de umidade do solo e luminosidade têm sensibilidade ajustável fisi
 ### Risco 2 — Baud rate do monitor serial (identificado na Aula 06)
 
 Em uma tentativa anterior de validar o firmware no protótipo físico, o monitor serial exibiu caracteres corrompidos em vez de texto legível, por uma provável incompatibilidade entre a taxa de transmissão do firmware (`Serial.begin(115200)`) e a configurada no monitor serial do computador usado naquele dia. O firmware foi posteriormente validado com sucesso, tanto em simulação (Wokwi) quanto no protótipo físico com o monitor serial configurado corretamente.
-
-## Feedback da Aula 04
-
-Conversa individual com o professor ainda não realizada nesta aula.
