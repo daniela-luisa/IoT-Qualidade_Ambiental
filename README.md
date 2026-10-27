@@ -125,7 +125,7 @@ python backend/decisor.py
 
 ## Estado atual e direção do upgrade (CP12 → N3)
 
-**Estado atual:** estação com 1 ESP32, 3 sensores (DHT11, solo e luminosidade com saída digital), LED e buzzer, telemetria MQTT e um backend de decisão em Python que fecha o ciclo comando → atuador → confirmação. Ainda **não** há banco de dados, histórico, interface web, login, broker próprio, orquestração, testes automatizados nem OTA, e o broker usado é público.
+**Estado atual (herdado da N1):** estação com 1 ESP32, 3 sensores (DHT11, solo e luminosidade com saída digital), LED e buzzer, telemetria MQTT e um backend de decisão em Python que fecha o ciclo comando → atuador → confirmação. Ainda **não** há banco de dados, histórico, interface web, login, broker próprio, orquestração, testes automatizados nem OTA, e o broker usado é público.
 
 **Para onde o upgrade está indo (N3):** transformar o protótipo em um produto completo — o hardware mede, a rede transporta, o backend valida, decide e guarda, a interface informa e o usuário comanda, com confirmação do dispositivo. O piso da N3 (R1–R18) está conferido, requisito por requisito, no documento do CP12.
 
@@ -154,6 +154,8 @@ python backend/decisor.py
 
 > Instruções completas de instalação e execução (README do R11) serão adicionadas até a N3 (01/12/2026).
 
+- `docs/esquema_eletrico.png`, `docs/fluxograma_firmware.png`, `docs/mapa_de_pinos.md` e `CONTRATOS.md` (contrato MQTT v1): entregues no CP12 completo (27/10).
+
 ## Backlog atualizado
 
 | Tarefa | Responsável | Status |
@@ -180,9 +182,9 @@ python backend/decisor.py
 | Corrigir `DURACAO_ALERTA` para o alerta ficar contínuo | Daniela | Feito |
 | Implementar backend de decisão automática (`backend/decisor.py`) | Daniela | Feito |
 | Montar circuito completo em protoboard | Marcelo | Feito |
-| Validar sensores + backend rodando juntos no protótipo físico | Todos | feito |
-| Trocar Wi-Fi de teste pela rede real do dia da apresentação | João | feito |
-| Testar demonstração funcional de ponta a ponta no hardware físico | João | feito |
+| Validar sensores + backend rodando juntos no protótipo físico | Todos | A fazer |
+| Trocar Wi-Fi de teste pela rede real do dia da apresentação | João | A fazer |
+| Testar demonstração funcional de ponta a ponta no hardware físico | João | A fazer |
 | CP12 — seções 1 a 4 (PDF + repositório atualizado) | Todos | Feito |
 | CP12 — seções 5 a 9 (hardware calculado, fluxograma, contrato v1, tecnologias, cronograma) | Todos | A fazer (até 27/10) |
 
@@ -190,7 +192,7 @@ python backend/decisor.py
 
 ### Risco 1 — Calibração dos sensores
 
-Os módulos de umidade do solo e luminosidade têm sensibilidade ajustável fisicamente (potenciômetro no próprio módulo). Se a sensibilidade não estiver bem ajustada, a leitura digital (HIGH/LOW) pode não refletir corretamente a condição real do ambiente — por exemplo, classificando solo levemente úmido como "seco". Esse ajuste precisa ser conferido fisicamente antes da demonstração, testando com o solo/luz em condições conhecidas.
+Os módulos de umidade do solo e luminosidade têm sensibilidade ajustável fisicamente (potenciômetro no próprio módulo). Se a sensibilidade não estiver bem ajustada, a leitura digital (HIGH/LOW) pode não refletir corretamente a condição real do ambiente — por exemplo classificando solo levemente úmido como "seco". Esse ajuste precisa ser conferido fisicamente antes da demonstração, testando com o solo/luz em condições conhecidas.
 
 ### Risco 2 — Baud rate do monitor serial (identificado na Aula 06)
 
