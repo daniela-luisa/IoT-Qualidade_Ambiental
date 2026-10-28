@@ -149,7 +149,7 @@ python backend/decisor.py
 
 ### Documentos do upgrade
 
-- `CP12_EQUIPE-5_PARCIAL.pdf` — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026.
+- [`CP12_EQUIPE-5_PARCIAL.pdf`](https://exemplo.com) — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026.
 - As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) entram na entrega completa de 27/10/2026.
 
 > Instruções completas de instalação e execução (README do R11) serão adicionadas até a N3 (01/12/2026).
