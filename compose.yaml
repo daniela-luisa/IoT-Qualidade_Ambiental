@@ -1,0 +1,53 @@
+# Stack local do projeto MACP (Grupo 5): Mosquitto + PostgreSQL.
+# Uso: cp .env.example .env && docker compose up -d
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: macp-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+
+  postgres:
+    image: postgres:16
+    container_name: macp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Todo .sql em ./db roda na primeira subida (schema.sql do Willian)
+      - ./db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Ativar quando o backend tiver Dockerfile (parte do Leonardo):
+  # backend:
+  #   build: ./backend
+  #   container_name: macp-backend
+  #   restart: unless-stopped
+  #   env_file: .env
+  #   environment:
+  #     MQTT_HOST: mosquitto
+  #     DB_HOST: postgres
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     mosquitto:
+  #       condition: service_started
+  #   ports:
+  #     - "8000:8000"
+
+volumes:
+  mosquitto_data:
+  pg_data:
