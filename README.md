@@ -133,11 +133,11 @@ python backend/decisor.py
 |---|---|---|
 | Hardware | 1 ESP32, sensores digitais, LED e buzzer | 2 nós ESP32 (`estacao-01` e `estacao-02`), sensor de solo analógico (ADC1) e atuador de irrigação (bomba + relé) além de LED/buzzer |
 | Firmware | Leitura com `millis()`, reconexão bloqueante, sem configuração persistente | Laço não bloqueante, regra local sem rede, estado seguro, configuração em NVS, `deviceId`, LWT e OTA |
-| MQTT | Broker público, payloads em texto puro | Mosquitto próprio com TLS, JSON versionado, `CONTRATOS.md` |
+| MQTT | Broker público, payloads em texto puro | Mosquitto próprio (TLS se houver tempo), JSON versionado, `CONTRATOS.md` |
 | Backend | Script `decisor` com interface de desktop | API que valida o contrato, regras remotas e comandos com `commandId` |
 | Banco | Não existia | PostgreSQL (medições, comandos, usuários) |
 | Interface | Cliente MQTT / log do script | Aplicação web com login, histórico, online/offline, alertas, comando e painel analítico |
-| Operação | Execução manual | Docker Compose, notificação por Telegram, perfis de usuário, testes e CI |
+| Operação | Execução manual | Docker Compose, notificação por e-mail, perfis de usuário, testes e CI |
 
 ### Arquitetura-alvo (N3)
 
@@ -149,12 +149,12 @@ python backend/decisor.py
 
 ### Documentos do upgrade
 
-- [`CP12_EQUIPE-5_PARCIAL.pdf`](https://exemplo.com) — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026.
-- As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) entram na entrega completa de 27/10/2026.
+- [`CP12_EQUIPE-5_PARCIAL.pdf`](docs/CP12_EQUIPE-5_PARCIAL.pdf) — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026 (mesmo PDF entregue no Teams).
+- As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) fazem parte da entrega completa do CP12 de 27/10/2026.
 
-> Instruções completas de instalação e execução (README do R11) serão adicionadas até a N3 (01/12/2026).
+> Instruções completas de instalação e execução (README do R11) serão adicionadas até a defesa da N3 (24/11/2026).
 
-- `docs/esquema_eletrico.png`, `docs/fluxograma_firmware.png`, `docs/mapa_de_pinos.md` e `CONTRATOS.md` (contrato MQTT v1): entregues no CP12 completo (27/10).
+- [`docs/Esquema_Eletrico_Por_No.jpeg`](docs/Esquema_Eletrico_Por_No.jpeg), [`docs/Fluxograma_Firmware.jpeg`](docs/Fluxograma_Firmware.jpeg), [`docs/mapa_de_pinos.md`](docs/mapa_de_pinos.md) e [`CONTRATOS.md`](CONTRATOS.md) (contrato MQTT v1): entregues no CP12 completo (27/10).
 
 ## Backlog atualizado
 
@@ -186,7 +186,7 @@ python backend/decisor.py
 | Trocar Wi-Fi de teste pela rede real do dia da apresentação | João | A fazer |
 | Testar demonstração funcional de ponta a ponta no hardware físico | João | A fazer |
 | CP12 — seções 1 a 4 (PDF + repositório atualizado) | Todos | Feito |
-| CP12 — seções 5 a 9 (hardware calculado, fluxograma, contrato v1, tecnologias, cronograma) | Todos | A fazer (até 27/10) |
+| CP12 — seções 5 a 9 (hardware calculado, fluxograma, contrato v1, tecnologias, cronograma) | Todos | Feito (entrega de 27/10) |
 
 ## Riscos técnicos
 
