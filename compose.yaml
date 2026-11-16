@@ -31,22 +31,25 @@ services:
       timeout: 3s
       retries: 10
 
-  # Ativar quando o backend tiver Dockerfile (parte do Leonardo):
-  # backend:
-  #   build: ./backend
-  #   container_name: macp-backend
-  #   restart: unless-stopped
-  #   env_file: .env
-  #   environment:
-  #     MQTT_HOST: mosquitto
-  #     DB_HOST: postgres
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     mosquitto:
-  #       condition: service_started
-  #   ports:
-  #     - "8000:8000"
+  backend:
+    build: ./backend
+    container_name: macp-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MQTT_HOST: mosquitto
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      WEB_DIR: /web
+    volumes:
+      - ./web:/web:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    ports:
+      - "8000:8000"
 
 volumes:
   mosquitto_data:
