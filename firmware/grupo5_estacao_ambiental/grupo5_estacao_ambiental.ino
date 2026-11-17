@@ -7,46 +7,49 @@
 #include <ArduinoJson.h>
 
 // ===================== CONFIGURACAO =====================
-// MODO_SIMULADOR 1 = Wokwi (broker publico, sem segredo) | 0 = prototipo fisico (Mosquitto do notebook).
-// Wi-Fi real do prototipo fisico: criar secrets.h (fora do git) com WIFI_SSID e WIFI_PASSWORD.
+// MODO_SIMULADOR 1 = Wokwi | 0 = prototipo fisico. Nos dois casos o broker e o Mosquitto do
+// docker compose (porta 1883 do notebook), o mesmo que o backend assina.
+//   Wokwi: o ESP32 simulado alcanca o notebook pelo nome host.wokwi.internal. Funciona no
+//          Wokwi para VS Code; no site wokwi.com so com o Private IoT Gateway ligado.
+//   Fisico: criar secrets.h (fora do git) com WIFI_SSID, WIFI_PASSWORD, MQTT_HOST (IP do
+//          notebook) e, opcional, OTA_PASSWORD. No modo simulador o secrets.h e ignorado.
 #define MODO_SIMULADOR 1
 
 #define DEVICE_ID   "estacao-01"      // a segunda placa usa "estacao-02"
-#define FW_VERSION  "1.0.0"
+#define FW_VERSION  "1.1.0"
+
+// Igual ao MQTT_PREFIX do .env do backend (padrao "grupo5"). Com prefixo diferente o backend nao ve nada.
+#define MQTT_PREFIX "grupo5"
+#define MQTT_PORT   1883
 
 #if MODO_SIMULADOR
-  #define WIFI_SSID_PADRAO  "Wokwi-GUEST"
-  #define WIFI_SENHA_PADRAO ""
-  #define MQTT_HOST         "broker.hivemq.com"
-  #define MQTT_PORT         1883
-  // Broker publico e compartilhado: prefixo UNICO, igual ao MQTT_PREFIX do .env do backend.
-  #define MQTT_PREFIX       "grupo5-xk29"
+  #define WIFI_SSID         "Wokwi-GUEST"
+  #define WIFI_PASSWORD     ""
+  #define MQTT_HOST         "host.wokwi.internal"
   #define DHT_TIPO          DHT22     // Wokwi so tem DHT22
-  #define RELE_ATIVO_BAIXO  0         // rele do Wokwi liga em ALTO
-  #define MQTT_KEEPALIVE_S  60        // Wokwi roda a ~31% da velocidade real
+  #define RELE_ATIVO_BAIXO  0         // rele do Wokwi liga em ALTO (diagram.json: bomba no contato NO)
+  #define MQTT_KEEPALIVE_S  60        // Wokwi roda mais devagar que o tempo real
   #define USAR_OTA          0
-  #define USAR_NTP          0         // Wokwi roda a ~31%: o relogio do ESP32 atrasaria; ts vai null e o backend usa a hora de chegada
+  #define USAR_NTP          0         // relogio simulado atrasa; ts vai null e o backend usa a hora de chegada
 #else
-  #define WIFI_SSID_PADRAO  "TROCAR"
-  #define WIFI_SENHA_PADRAO "TROCAR"
-  #define MQTT_HOST         "192.168.0.10"   // IP do notebook na rede local (ipconfig)
-  #define MQTT_PORT         1883
-  #define MQTT_PREFIX       "grupo5"
+  #if __has_include("secrets.h")
+    #include "secrets.h"
+  #endif
+  #ifndef WIFI_SSID
+    #define WIFI_SSID       "TROCAR"
+    #define WIFI_PASSWORD   "TROCAR"
+  #endif
+  #ifndef MQTT_HOST
+    #define MQTT_HOST       "192.168.0.10"   // IP do notebook na rede local (macOS: ipconfig getifaddr en0)
+  #endif
   #define DHT_TIPO          DHT11
   #define RELE_ATIVO_BAIXO  1         // modulo de rele comum liga em BAIXO
   #define MQTT_KEEPALIVE_S  15
   #define USAR_OTA          1
   #define USAR_NTP          1
 #endif
-#define LDR_INVERTIDO     0         // 1 se mais luz = valor MENOR
-
-#if __has_include("secrets.h")
-  #include "secrets.h"              // define WIFI_SSID e WIFI_PASSWORD (nao vai para o git)
-#endif
-#ifndef WIFI_SSID
-  #define WIFI_SSID     WIFI_SSID_PADRAO
-  #define WIFI_PASSWORD WIFI_SENHA_PADRAO
-#endif
+// Wokwi (photoresistor-sensor) e os modulos LDR comuns: mais luz = tensao MENOR no AO.
+#define LDR_INVERTIDO     1
 
 #define PIN_DHT     14
 #define PIN_SOLO    35
@@ -62,6 +65,7 @@
 #define PERIODO_TELEMETRIA_MS  5000UL
 #define PERIODO_ESTADO_MS      30000UL
 #define RECONEXAO_MQTT_MS      5000UL
+#define PISCA_ALERTA_MS        500UL
 #define FUSO_SEGUNDOS          (-3 * 3600)
 #if USAR_OTA
   #include <ArduinoOTA.h>
@@ -113,7 +117,7 @@ struct Resposta {
 class Estacao {
  public:
   Cfg cfg;
-  Modo modo = AUTOMATICO;
+  Modo modo = SEGURO;  // boot em seguro; a primeira leitura valida do DHT passa para automatico
   bool bomba = false, led = false, buzzer = false;
 
   // chamar a cada loop(). Retorna true se algo mudou (desligou atuador, mudou de modo).
@@ -165,9 +169,9 @@ class Estacao {
     bool ehConfig = strcmp(alvo, "config") == 0;
     bool ehAtuador = strcmp(alvo, "bomba") == 0 || strcmp(alvo, "led") == 0 || strcmp(alvo, "buzzer") == 0;
 
-    // modo seguro: so aceita DESLIGAR atuador (desligar e sempre seguro)
-    if (modo == SEGURO && !(ehAtuador && strcmp(acao, "off") == 0)) return rejeitar(r, "modo_seguro");
     if (!ehConfig && !ehAtuador) return rejeitar(r, "alvo_invalido");
+    // modo seguro: aceita config e DESLIGAR atuador (os dois sao sempre seguros); ligar e rejeitado
+    if (modo == SEGURO && ehAtuador && strcmp(acao, "off") != 0) return rejeitar(r, "modo_seguro");
 
     if (ehConfig) return aplicarConfig(doc, r);
 
@@ -181,9 +185,11 @@ class Estacao {
       JsonVariantConst d = doc["duracaoS"];
       if (d.isNull()) dur = padrao;
       else if (d.is<int>()) dur = d.as<int>();
-      else return rejeitar(r, ehBomba ? "intertravamento_duracao" : "valor_fora_da_faixa");
+      else return rejeitar(r, "valor_fora_da_faixa");
       if (ehBomba) {
-        if (dur < BOMBA_DUR_MIN || dur > BOMBA_DUR_MAX || dur > cfg.duracaoMaxS) return rejeitar(r, "intertravamento_duracao");
+        // fora da faixa do contrato (1..15) e valor_fora_da_faixa; dentro dela mas acima do limite configurado e intertravamento
+        if (dur < BOMBA_DUR_MIN || dur > BOMBA_DUR_MAX) return rejeitar(r, "valor_fora_da_faixa");
+        if (dur > cfg.duracaoMaxS) return rejeitar(r, "intertravamento_duracao");
         if (bomba || (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)))
           return rejeitar(r, "intertravamento_intervalo");
       } else if (dur < LED_DUR_MIN || dur > LED_DUR_MAX) {
@@ -332,6 +338,10 @@ uint32_t ultLeitura = 0, ultEstado = 0, ultTentativaMqtt = 0;
 bool primeiraLeitura = true, ntpIniciado = false, falhaForcada = false;
 bool ledAplicado = false, buzzerAplicado = false, releAplicado = false;
 float ultSolo = NAN, ultLuz = NAN, ultTemp = NAN;
+// regra local (R2): sem broker e com condicao inadequada (ou em modo seguro) o LED pisca sozinho.
+// A bomba nunca liga pela regra local: irrigar e decisao do backend (R8).
+bool alertaLocal = false, ledPisca = false;
+uint32_t ultPisca = 0;
 
 // ------------------------------------------------------------ util
 void agoraTs(char* buf, size_t n) {
@@ -379,7 +389,8 @@ void aplicarSaidas() {
     releAplicado = releLigar;
     Serial.printf("[bomba] %s\n", releLigar ? "LIGADA" : "desligada");
   }
-  if (est.led != ledAplicado) { digitalWrite(PIN_LED, est.led ? HIGH : LOW); ledAplicado = est.led; }
+  bool ledFisico = est.led || (alertaLocal && ledPisca);
+  if (ledFisico != ledAplicado) { digitalWrite(PIN_LED, ledFisico ? HIGH : LOW); ledAplicado = ledFisico; }
   if (est.buzzer != buzzerAplicado) {
     if (est.buzzer) tone(PIN_BUZZER, 1000); else { noTone(PIN_BUZZER); digitalWrite(PIN_BUZZER, LOW); }
     buzzerAplicado = est.buzzer;
@@ -443,7 +454,9 @@ void lerEPublicar() {
   ultSolo = solo; ultLuz = luz; ultTemp = t;
 
   bool mudouModo = est.registrarLeituraDht(dhtOk);
+  const char* condAntes = condAtual;
   condAtual = g5::condicao(solo, t, luz, est.cfg.limiarSoloSecoPct);
+  bool mudouCond = strcmp(condAntes, condAtual) != 0;
   Serial.printf("[sensores] T=%.1f UR=%.1f solo=%.1f%% luz=%.1f%% cond=%s modo=%s\n", t, u, solo, luz, condAtual, g5::nomeModo(est.modo));
 
   // valor invalido vai como null: o backend registra falha_sensor e nao grava a leitura
@@ -451,7 +464,17 @@ void lerEPublicar() {
   publicarTelemetria("umidade_ar", u, "%");
   publicarTelemetria("umidade_solo", solo, "%");
   publicarTelemetria("luminosidade", luz, "%");
-  if (mudouModo) { aplicarSaidas(); publicarEstado(); }
+  if (mudouModo || mudouCond) { aplicarSaidas(); publicarEstado(); }
+}
+
+void regraLocal(uint32_t agora) {
+  bool deve = !mqtt.connected() && (strcmp(condAtual, "inadequado") == 0 || est.modo == g5::SEGURO);
+  if (deve != alertaLocal) {
+    alertaLocal = deve;
+    ledPisca = false;
+    Serial.printf("[regra local] alerta %s\n", deve ? "LIGADO (sem broker)" : "desligado");
+  }
+  if (alertaLocal && g5::passou(agora, ultPisca, PISCA_ALERTA_MS)) { ultPisca = agora; ledPisca = !ledPisca; }
 }
 
 // ------------------------------------------------------------ teste pela serial (Wokwi)
@@ -512,6 +535,9 @@ void loop() {
     #endif
     #if USAR_OTA
       ArduinoOTA.setHostname(DEVICE_ID);
+      #ifdef OTA_PASSWORD
+        ArduinoOTA.setPassword(OTA_PASSWORD);  // sem senha qualquer um na rede grava firmware
+      #endif
       ArduinoOTA.onStart([]() { est.bomba = false; aplicarSaidas(); });  // bomba desligada durante a atualizacao
       ArduinoOTA.begin();
     #endif
@@ -527,6 +553,7 @@ void loop() {
   agora = millis();  // o mqtt.loop() pode ter aceitado um comando: nao usar a hora lida antes dele
 
   if (est.tick(agora)) { aplicarSaidas(); publicarEstado(); }
+  regraLocal(agora);
   aplicarSaidas();
 
   if (primeiraLeitura || g5::passou(agora, ultLeitura, PERIODO_TELEMETRIA_MS)) {
