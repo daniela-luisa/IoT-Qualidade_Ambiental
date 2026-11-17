@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MACP · Qualidade Ambiental</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <section id="tela-login" class="login">
+    <form id="form-login" class="card">
+      <h1>MACP</h1>
+      <p class="mudo">Monitoramento ambiental, Grupo 5</p>
+      <label>E-mail <input id="login-email" type="email" autocomplete="username" required></label>
+      <label>Senha <input id="login-senha" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Entrar</button>
+      <p id="login-erro" class="erro" role="alert"></p>
+    </form>
+  </section>
+
+  <main id="tela-app" hidden>
+    <header class="topo">
+      <h1>MACP</h1>
+      <span id="saude" class="badge">...</span>
+      <span class="espaco"></span>
+      <span id="usuario" class="mudo"></span>
+      <button id="btn-sair" class="sec">Sair</button>
+    </header>
+
+    <section>
+      <h2>Estações</h2>
+      <div id="cards" class="grade"></div>
+    </section>
+
+    <section class="duas">
+      <div class="card">
+        <h2>Alertas ativos</h2>
+        <ul id="alertas" class="lista"></ul>
+      </div>
+      <div class="card">
+        <h2>Enviar comando</h2>
+        <p id="aviso-papel" class="mudo" hidden>Seu perfil é <b>operador</b>: só visualiza. Peça a um administrador para enviar comandos.</p>
+        <form id="form-comando" class="linha">
+          <label>Estação <select id="cmd-disp"></select></label>
+          <label>Alvo
+            <select id="cmd-alvo">
+              <option value="bomba">Bomba (1 a 15 s)</option>
+              <option value="led">LED (1 a 60 s)</option>
+              <option value="buzzer">Buzzer (1 a 60 s)</option>
+            </select>
+          </label>
+          <label>Duração (s) <input id="cmd-dur" type="number" min="1" max="15" value="5" required></label>
+          <button type="submit">Enviar</button>
+        </form>
+        <p id="cmd-msg" class="mudo" role="status"></p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Comandos recentes</h2>
+      <p class="mudo">O estado só vira <b>confirmado</b> quando o dispositivo publica o estado depois de agir.</p>
+      <div class="rolagem">
+        <table>
+          <thead><tr><th>Quando</th><th>Estação</th><th>Comando</th><th>Origem</th><th>Estado</th><th>Motivo</th></tr></thead>
+          <tbody id="tab-comandos"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Painel analítico</h2>
+      <div class="linha">
+        <label>Estação <select id="pn-disp"></select></label>
+        <label>Período
+          <select id="pn-horas">
+            <option value="1">1 hora</option>
+            <option value="6">6 horas</option>
+            <option value="24">24 horas</option>
+          </select>
+        </label>
+      </div>
+      <div id="resumo" class="resumo"></div>
+      <div class="graficos" id="graficos"></div>
+    </section>
+
+    <section class="duas">
+      <div class="card">
+        <h2>Regra de irrigação automática</h2>
+        <p class="mudo">Se a umidade do solo ficar abaixo do limiar durante a janela, o backend envia um comando de bomba.</p>
+        <form id="form-regra" class="grade-form">
+          <label>Estação <select id="rg-disp"></select></label>
+          <label>Limiar do solo (%) <input id="rg-limiar" type="number" min="10" max="80" step="1" required></label>
+          <label>Janela (min) <input id="rg-janela" type="number" min="1" max="120" required></label>
+          <label>Intervalo mínimo (s) <input id="rg-intervalo" type="number" min="30" max="3600" required></label>
+          <label>Duração da bomba (s) <input id="rg-dur" type="number" min="1" max="15" required></label>
+          <label class="check"><input id="rg-ativa" type="checkbox"> Regra ativa</label>
+          <button type="submit" id="rg-salvar">Salvar regra</button>
+        </form>
+        <p id="rg-msg" class="mudo" role="status"></p>
+      </div>
+      <div class="card">
+        <h2>Eventos</h2>
+        <ul id="eventos" class="lista pequena"></ul>
+      </div>
+    </section>
+  </main>
+
+  <script src="vendor/chart.umd.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
