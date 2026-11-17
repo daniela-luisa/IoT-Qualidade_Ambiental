@@ -120,7 +120,10 @@ def test_intervalo_expirado_permite_novo_disparo(ponte):
     assert _n_comandos() == 1
 
     # Recua o timestamp do primeiro comando além do intervalo mínimo (60 s)
-    consulta("UPDATE comandos SET enviado_em = now() - interval '90 seconds'")
+    with db.transacao() as conn:
+        conn.exec_driver_sql(
+            "UPDATE comandos SET enviado_em = now() - interval '90 seconds'"
+        )
 
     regras.avaliar_todas(ponte)
     assert _n_comandos() == 2
