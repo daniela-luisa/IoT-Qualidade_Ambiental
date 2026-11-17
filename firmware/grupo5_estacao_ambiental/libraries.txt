@@ -6,3 +6,8 @@ DHT sensor library
 
 PubSubClient
 Adafruit Unified Sensor
+
+DHT sensor library
+PubSubClient
+Adafruit Unified Sensor
+ArduinoJson@7.2.1
