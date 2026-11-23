@@ -295,6 +295,56 @@ def listar_regras(usuario: dict = Depends(auth.usuario_logado)):
         ))
 
 
+# campo, tipos aceitos, minimo, maximo (faixas do CONTRATOS.md)
+_FAIXAS_REGRA = (
+    ("limiar", (int, float), 10, 80),
+    ("janela_min", int, 1, 120),
+    ("intervalo_min_s", int, 30, 3600),
+    ("duracao_s", int, 1, 15),
+)
+
+
+def _validar_regra(corpo: dict) -> dict:
+    regra = {}
+    for campo, tipos, minimo, maximo in _FAIXAS_REGRA:
+        valor = corpo.get(campo)
+        # bool e subclasse de int: True passaria como 1 sem o primeiro teste
+        if isinstance(valor, bool) or not isinstance(valor, tipos) or not minimo <= valor <= maximo:
+            tipo = "inteiro" if tipos is int else "numero"
+            raise ErroApi(422, "valor_fora_da_faixa", f"{campo} deve ser {tipo} entre {minimo} e {maximo}")
+        regra[campo] = valor
+    if not isinstance(corpo.get("ativa"), bool):
+        raise ErroApi(422, "valor_fora_da_faixa", "ativa deve ser true ou false")
+    regra["ativa"] = corpo["ativa"]
+    return regra
+
+
+@app.put("/api/regras/{dispositivo_id}")
+def salvar_regra(dispositivo_id: str, corpo: dict = Body(...), usuario: dict = Depends(exigir_admin)):
+    regra = _validar_regra(corpo)
+    with db.transacao() as conn:
+        _checar_dispositivo(conn, dispositivo_id)
+        salva = db.linha(
+            conn,
+            """
+            INSERT INTO regras (dispositivo_id, limiar, janela_min, intervalo_min_s, duracao_s, ativa)
+            VALUES (:d, :limiar, :janela_min, :intervalo_min_s, :duracao_s, :ativa)
+            ON CONFLICT (dispositivo_id) DO UPDATE SET
+                limiar = EXCLUDED.limiar,
+                janela_min = EXCLUDED.janela_min,
+                intervalo_min_s = EXCLUDED.intervalo_min_s,
+                duracao_s = EXCLUDED.duracao_s,
+                ativa = EXCLUDED.ativa,
+                atualizado_em = now()
+            RETURNING dispositivo_id, grandeza, limiar, janela_min, intervalo_min_s, duracao_s, ativa, atualizado_em
+            """,
+            d=dispositivo_id, **regra,
+        )
+        detalhe = ", ".join(f"{campo}={valor}" for campo, valor in regra.items())
+        db.registrar_evento(conn, dispositivo_id, "regra_alterada", f"{usuario['email']}: {detalhe}")
+    return _json(salva)
+
+
 @app.get("/api/comandos")
 def listar_comandos(
     dispositivo_id: str | None = None,

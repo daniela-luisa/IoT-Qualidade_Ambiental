@@ -181,3 +181,96 @@ def test_senhas_ficam_so_como_hash(cliente):
     for u in consulta("SELECT senha_hash FROM usuarios"):
         assert u["senha_hash"].startswith("$2")
         assert "admin123" not in u["senha_hash"] and "operador123" not in u["senha_hash"]
+
+
+REGRA = {"limiar": 35.5, "janela_min": 10, "intervalo_min_s": 120, "duracao_s": 7, "ativa": False}
+
+
+def regra_atual(device=D):
+    [r] = consulta(
+        "SELECT limiar, janela_min, intervalo_min_s, duracao_s, ativa FROM regras WHERE dispositivo_id = :d",
+        d=device,
+    )
+    return r
+
+
+def eventos_regra():
+    return consulta("SELECT dispositivo_id, detalhe FROM eventos WHERE tipo = 'regra_alterada'")
+
+
+def test_admin_salva_regra_e_get_mostra(cliente, ponte, h_admin):
+    r = cliente.put(f"/api/regras/{D}", headers=h_admin, json=REGRA)
+    assert r.status_code == 200, r.text
+    salva = r.json()
+    assert {k: salva[k] for k in REGRA} == REGRA
+    assert salva["dispositivo_id"] == D and salva["grandeza"] == "umidade_solo" and salva["atualizado_em"]
+    regras = {x["dispositivo_id"]: x for x in cliente.get("/api/regras", headers=h_admin).json()}
+    assert set(regras[D]) == set(salva)
+    assert {k: regras[D][k] for k in REGRA} == REGRA
+    assert regras["estacao-02"]["limiar"] == 30
+    assert ponte.publicados == []
+
+
+def test_operador_nao_altera_regra(cliente, h_operador):
+    antes = regra_atual()
+    r = cliente.put(f"/api/regras/{D}", headers=h_operador, json=REGRA)
+    assert r.status_code == 403 and r.json()["codigo"] == "sem_permissao"
+    assert regra_atual() == antes
+    assert eventos_regra() == []
+
+
+def test_regra_sem_login_e_401(cliente):
+    antes = regra_atual()
+    assert cliente.put(f"/api/regras/{D}", json=REGRA).status_code == 401
+    assert regra_atual() == antes
+
+
+def test_regra_fora_da_faixa_e_422(cliente, h_admin):
+    antes = regra_atual()
+    invalidos = [
+        ("limiar", 9.9), ("limiar", 80.1), ("limiar", "30"), ("limiar", True),
+        ("janela_min", 0), ("janela_min", 121), ("janela_min", 5.5), ("janela_min", True),
+        ("intervalo_min_s", 29), ("intervalo_min_s", 3601), ("intervalo_min_s", "60"),
+        ("duracao_s", 0), ("duracao_s", 16), ("duracao_s", True),
+    ]
+    for campo, valor in invalidos:
+        r = cliente.put(f"/api/regras/{D}", headers=h_admin, json={**REGRA, campo: valor})
+        assert r.status_code == 422, (campo, valor)
+        assert r.json()["codigo"] == "valor_fora_da_faixa", (campo, valor)
+        assert r.json()["mensagem"].startswith(campo), (campo, valor)
+    for campo in REGRA:
+        sem_campo = {k: v for k, v in REGRA.items() if k != campo}
+        r = cliente.put(f"/api/regras/{D}", headers=h_admin, json=sem_campo)
+        assert r.status_code == 422 and r.json()["codigo"] == "valor_fora_da_faixa", campo
+    assert regra_atual() == antes
+    assert eventos_regra() == []
+
+
+def test_regra_aceita_os_limites_da_faixa(cliente, h_admin):
+    for limites in ({"limiar": 10, "janela_min": 1, "intervalo_min_s": 30, "duracao_s": 1},
+                    {"limiar": 80, "janela_min": 120, "intervalo_min_s": 3600, "duracao_s": 15}):
+        r = cliente.put(f"/api/regras/{D}", headers=h_admin, json={**limites, "ativa": True})
+        assert r.status_code == 200, r.text
+        assert regra_atual() == {**limites, "ativa": True}
+
+
+def test_regra_ativa_nao_bool_e_422(cliente, h_admin):
+    for valor in (1, "true", None):
+        r = cliente.put(f"/api/regras/{D}", headers=h_admin, json={**REGRA, "ativa": valor})
+        assert r.status_code == 422 and r.json()["codigo"] == "valor_fora_da_faixa", valor
+        assert r.json()["mensagem"].startswith("ativa"), valor
+
+
+def test_regra_estacao_inexistente_e_404(cliente, h_admin):
+    r = cliente.put("/api/regras/estacao-99", headers=h_admin, json=REGRA)
+    assert r.status_code == 404 and r.json()["codigo"] == "dispositivo_desconhecido"
+    assert eventos_regra() == []
+
+
+def test_salvar_regra_gera_evento(cliente, h_admin):
+    assert cliente.put(f"/api/regras/{D}", headers=h_admin, json=REGRA).status_code == 200
+    [ev] = eventos_regra()
+    assert ev["dispositivo_id"] == D
+    assert ev["detalhe"].startswith(ADMIN[0])
+    for trecho in ("limiar=35.5", "janela_min=10", "intervalo_min_s=120", "duracao_s=7", "ativa=False"):
+        assert trecho in ev["detalhe"], trecho
