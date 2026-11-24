@@ -1,4 +1,10 @@
 // Estacao ambiental - Grupo 5 - N3 (arquivo unico para o Wokwi). Contrato MQTT v1.
+// fw 1.2.1: rele acionado em open-drain no prototipo fisico (modulo de 5 V nao soltava com o HIGH de 3,3 V do ESP32).
+//
+// LIGACAO DA BOMBA (prototipo fisico):
+//   ESP 3V3 -> VCC do rele | ESP GND -> GND do rele | GPIO 27 -> IN do rele (direto, sem diodo)
+//   Fonte 5V (+) -> COM | NO -> bomba (+) | bomba (-) -> Fonte (-) | NC vazio
+//   Diodo 1N4007 em paralelo com a bomba (faixa no +). A bomba NAO usa o 5V do ESP.
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <DHT.h>
@@ -13,19 +19,19 @@
 //          Wokwi para VS Code; no site wokwi.com so com o Private IoT Gateway ligado.
 //   Fisico: criar secrets.h (fora do git) com WIFI_SSID, WIFI_PASSWORD, MQTT_HOST (IP do
 //          notebook) e, opcional, OTA_PASSWORD. No modo simulador o secrets.h e ignorado.
-#define MODO_SIMULADOR 1
+#define MODO_SIMULADOR 0
 
 #define DEVICE_ID   "estacao-01"      // a segunda placa usa "estacao-02"
-#define FW_VERSION  "1.1.0"
+#define FW_VERSION  "1.3.1"
 
 // Igual ao MQTT_PREFIX do .env do backend (padrao "grupo5"). Com prefixo diferente o backend nao ve nada.
 #define MQTT_PREFIX "grupo5"
 #define MQTT_PORT   1883
 
 #if MODO_SIMULADOR
-  #define WIFI_SSID         "Wokwi-GUEST"
-  #define WIFI_PASSWORD     ""
-  #define MQTT_HOST         "host.wokwi.internal"
+  #define WIFI_SSID         "TDESI"
+  #define WIFI_PASSWORD     "leo12345"
+  #define MQTT_HOST         "10.252.1.58"
   #define DHT_TIPO          DHT22     // Wokwi so tem DHT22
   #define RELE_ATIVO_BAIXO  0         // rele do Wokwi liga em ALTO (diagram.json: bomba no contato NO)
   #define MQTT_KEEPALIVE_S  60        // Wokwi roda mais devagar que o tempo real
@@ -36,14 +42,14 @@
     #include "secrets.h"
   #endif
   #ifndef WIFI_SSID
-    #define WIFI_SSID       "TROCAR"
-    #define WIFI_PASSWORD   "TROCAR"
+    #define WIFI_SSID       "TDESI"
+    #define WIFI_PASSWORD   "leo12345"
   #endif
   #ifndef MQTT_HOST
-    #define MQTT_HOST       "192.168.0.10"   // IP do notebook na rede local (macOS: ipconfig getifaddr en0)
+    #define MQTT_HOST       "10.252.1.58"   // IP do notebook na rede local (macOS: ipconfig getifaddr en0)
   #endif
   #define DHT_TIPO          DHT11
-  #define RELE_ATIVO_BAIXO  1         // modulo de rele comum liga em BAIXO
+  #define RELE_ATIVO_BAIXO  1         // modulo do grupo liga em BAIXO (IN solto = desligado, IN em GND = ligado)
   #define MQTT_KEEPALIVE_S  15
   #define USAR_OTA          1
   #define USAR_NTP          1
@@ -61,6 +67,16 @@
 // calibracao do solo (ADC 0..4095; ALTO = seco). Medir no sensor real: no ar (SECO) e na agua (MOLHADO).
 #define SOLO_ADC_SECO     3200
 #define SOLO_ADC_MOLHADO  1200
+// Sensor de solo "sendo lido": leitura bruta abaixo do minimo = fio AO solto, sensor sem VCC ou curto com GND.
+// Sem teto: no ar o sensor satura perto de 4095, e isso e SOLO SECO (leitura valida), nao falha.
+// Sem solo valido a bomba NAO liga (o comando e rejeitado como modo_seguro) e a telemetria vai null.
+#define SOLO_ADC_MIN_VALIDO  100
+#define SOLO_ADC_MAX_VALIDO  4095
+// 1 = a bomba so liga com o sensor de solo lendo (padrao, usar sempre). 0 = SO para testar o rele na bancada.
+#define EXIGIR_SOLO_VALIDO   1
+// 1 = a propria placa liga a bomba quando o solo fica abaixo de limiarSoloSecoPct (so em modo automatico,
+// respeitando intervaloMinS e duracaoMaxS). 0 = so o backend liga a bomba.
+#define IRRIGACAO_LOCAL      1
 
 #define PERIODO_TELEMETRIA_MS  5000UL
 #define PERIODO_ESTADO_MS      30000UL
@@ -119,6 +135,8 @@ class Estacao {
   Cfg cfg;
   Modo modo = SEGURO;  // boot em seguro; a primeira leitura valida do DHT passa para automatico
   bool bomba = false, led = false, buzzer = false;
+  bool exigirSolo = true;  // bomba so liga com o sensor de solo lendo
+  bool soloOk = false;     // ultima leitura do solo foi valida
 
   // chamar a cada loop(). Retorna true se algo mudou (desligou atuador, mudou de modo).
   bool tick(uint32_t agora) {
@@ -133,12 +151,17 @@ class Estacao {
     return mudou;
   }
 
-  // chamar a cada leitura do DHT. Retorna true se o modo mudou.
-  bool registrarLeituraDht(bool ok) {
+  // chamar a cada ciclo de leitura. Retorna true se algo mudou (modo ou bomba desligada).
+  // Falha do DHT OU do solo (com exigirSolo) conta como falha de sensor: 3 seguidas = modo seguro.
+  bool registrarLeituraSensores(bool dhtOk, bool soloValido) {
+    soloOk = soloValido;
+    bool mudou = false;
+    if (exigirSolo && !soloValido && bomba) { bomba = false; mudou = true; }  // perdeu o solo: desliga na hora
+    bool ok = dhtOk && (soloValido || !exigirSolo);
     if (ok) {
       falhasSeguidas = 0;
       if (modo == SEGURO) { modo = AUTOMATICO; return true; }
-      return false;
+      return mudou;
     }
     if (falhasSeguidas < 1000) falhasSeguidas++;
     if (falhasSeguidas >= FALHAS_PARA_SEGURO && modo != SEGURO) {
@@ -146,7 +169,20 @@ class Estacao {
       bomba = false;  // seguro = bomba desligada na hora
       return true;
     }
-    return false;
+    return mudou;
+  }
+
+  // Irrigacao automatica local: so em AUTOMATICO (manual = pessoa no controle, seguro = nunca),
+  // com solo valido abaixo do limiar e fora do intervalo minimo desde a ultima irrigacao.
+  // Liga por BOMBA_DUR_PADRAO s (limitado por duracaoMaxS); o tick() desliga sozinho.
+  bool irrigarSeSeco(float soloPct, uint32_t agora) {
+    if (modo != AUTOMATICO || bomba) return false;
+    if (exigirSolo && !soloOk) return false;
+    if (isnan(soloPct) || soloPct >= (float)cfg.limiarSoloSecoPct) return false;
+    if (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)) return false;
+    int dur = BOMBA_DUR_PADRAO < cfg.duracaoMaxS ? BOMBA_DUR_PADRAO : cfg.duracaoMaxS;
+    bomba = true; bombaIni = agora; durBombaS = dur; jaIrrigou = true;
+    return true;
   }
 
   Resposta comando(const char* payload, size_t tam, uint32_t agora) {
@@ -172,6 +208,8 @@ class Estacao {
     if (!ehConfig && !ehAtuador) return rejeitar(r, "alvo_invalido");
     // modo seguro: aceita config e DESLIGAR atuador (os dois sao sempre seguros); ligar e rejeitado
     if (modo == SEGURO && ehAtuador && strcmp(acao, "off") != 0) return rejeitar(r, "modo_seguro");
+    // sem leitura valida do solo a bomba nao liga (motivo do contrato: modo_seguro)
+    if (exigirSolo && !soloOk && strcmp(alvo, "bomba") == 0 && strcmp(acao, "on") == 0) return rejeitar(r, "modo_seguro");
 
     if (ehConfig) return aplicarConfig(doc, r);
 
@@ -273,7 +311,7 @@ inline float pctLuz(int raw, bool invertido) {
 // temp pode ser NAN (falha do DHT): so entra na regra se valida.
 inline const char* condicao(float soloPct, float temp, float luzPct, int limiarSolo) {
   bool tempRuim = !isnan(temp) && (temp > 32.0f || temp < 10.0f);
-  if (soloPct < (float)limiarSolo || tempRuim) return "inadequado";
+  if (isnan(soloPct) || soloPct < (float)limiarSolo || tempRuim) return "inadequado";  // solo sem leitura = inadequado
   if (luzPct < 20.0f) return "atencao";
   return "adequado";
 }
@@ -339,7 +377,8 @@ bool primeiraLeitura = true, ntpIniciado = false, falhaForcada = false;
 bool ledAplicado = false, buzzerAplicado = false, releAplicado = false;
 float ultSolo = NAN, ultLuz = NAN, ultTemp = NAN;
 // regra local (R2): sem broker e com condicao inadequada (ou em modo seguro) o LED pisca sozinho.
-// A bomba nunca liga pela regra local: irrigar e decisao do backend (R8).
+// Bomba: com IRRIGACAO_LOCAL 1 a placa irriga sozinha quando o solo esta seco (ver irrigarSeSeco);
+// comandos do backend continuam valendo (on/off) e um comando de pessoa pausa a regra por 60 s (modo manual).
 bool alertaLocal = false, ledPisca = false;
 uint32_t ultPisca = 0;
 
@@ -381,11 +420,34 @@ void publicarTelemetria(const char* grandeza, float valor, const char* unidade) 
 }
 
 // ------------------------------------------------------------ atuadores (so aqui se mexe nos pinos)
+// Rele fisico (ativo em BAIXO, modulo de 5 V): o pino nunca vai para HIGH.
+//   ligar    -> pino puxa para GND (corrente no opto = rele fecha COM-NO)
+//   desligar -> pino solto (sem corrente no opto = rele abre). Com HIGH de 3,3 V num modulo
+//               de 5 V sobrava tensao no LED do opto e o rele nao soltava: bomba sempre ligada.
+// Wokwi (ativo em ALTO): saida normal push-pull.
+void releInit() {
+#if RELE_ATIVO_BAIXO
+  pinMode(PIN_RELE, INPUT);                // pino solto = desligado (nunca HIGH de 3,3 V)
+#else
+  digitalWrite(PIN_RELE, LOW);
+  pinMode(PIN_RELE, OUTPUT);
+  digitalWrite(PIN_RELE, LOW);
+#endif
+}
+
+void releFisico(bool ligar) {
+#if RELE_ATIVO_BAIXO
+  if (ligar) { digitalWrite(PIN_RELE, LOW); pinMode(PIN_RELE, OUTPUT); digitalWrite(PIN_RELE, LOW); }  // GND = liga
+  else       { pinMode(PIN_RELE, INPUT); }                                                           // solto = desliga
+#else
+  digitalWrite(PIN_RELE, ligar ? HIGH : LOW);
+#endif
+}
+
 void aplicarSaidas() {
   bool releLigar = est.bomba;
   if (releLigar != releAplicado) {
-    bool nivelAlto = RELE_ATIVO_BAIXO ? !releLigar : releLigar;
-    digitalWrite(PIN_RELE, nivelAlto ? HIGH : LOW);
+    releFisico(releLigar);
     releAplicado = releLigar;
     Serial.printf("[bomba] %s\n", releLigar ? "LIGADA" : "desligada");
   }
@@ -449,22 +511,30 @@ void lerEPublicar() {
   float t = falhaForcada ? NAN : dht.readTemperature();
   float u = falhaForcada ? NAN : dht.readHumidity();
   bool dhtOk = !isnan(t) && !isnan(u);
-  float solo = g5::pctSolo(lerAdc(PIN_SOLO), SOLO_ADC_SECO, SOLO_ADC_MOLHADO);
+  int rawSolo = lerAdc(PIN_SOLO);
+  bool soloValido = rawSolo >= SOLO_ADC_MIN_VALIDO && rawSolo <= SOLO_ADC_MAX_VALIDO;
+  float solo = soloValido ? g5::pctSolo(rawSolo, SOLO_ADC_SECO, SOLO_ADC_MOLHADO) : NAN;
   float luz = g5::pctLuz(lerAdc(PIN_LDR), LDR_INVERTIDO);
   ultSolo = solo; ultLuz = luz; ultTemp = t;
 
-  bool mudouModo = est.registrarLeituraDht(dhtOk);
+  bool mudouModo = est.registrarLeituraSensores(dhtOk, soloValido);
   const char* condAntes = condAtual;
   condAtual = g5::condicao(solo, t, luz, est.cfg.limiarSoloSecoPct);
   bool mudouCond = strcmp(condAntes, condAtual) != 0;
-  Serial.printf("[sensores] T=%.1f UR=%.1f solo=%.1f%% luz=%.1f%% cond=%s modo=%s\n", t, u, solo, luz, condAtual, g5::nomeModo(est.modo));
+  Serial.printf("[sensores] T=%.1f UR=%.1f solo=%.1f%% (raw %d%s) luz=%.1f%% cond=%s modo=%s\n", t, u, solo, rawSolo, soloValido ? "" : " INVALIDO", luz, condAtual, g5::nomeModo(est.modo));
 
   // valor invalido vai como null: o backend registra falha_sensor e nao grava a leitura
   publicarTelemetria("temperatura", t, "°C");
   publicarTelemetria("umidade_ar", u, "%");
   publicarTelemetria("umidade_solo", solo, "%");
   publicarTelemetria("luminosidade", luz, "%");
-  if (mudouModo || mudouCond) { aplicarSaidas(); publicarEstado(); }
+  if (!soloValido && est.exigirSolo) Serial.println("[solo] sem leitura valida: bomba bloqueada (confira o fio AO no GPIO 35)");
+  bool irrigou = false;
+#if IRRIGACAO_LOCAL
+  irrigou = est.irrigarSeSeco(solo, millis());
+  if (irrigou) Serial.printf("[irrigacao] solo %.1f%% < limiar %d%%: bomba ligada pela regra local\n", solo, est.cfg.limiarSoloSecoPct);
+#endif
+  if (mudouModo || mudouCond || irrigou) { aplicarSaidas(); publicarEstado(); }
 }
 
 void regraLocal(uint32_t agora) {
@@ -494,14 +564,13 @@ void lerSerial() {
 // ------------------------------------------------------------ setup / loop
 void setup() {
   // rele ANTES de tudo: nivel de repouso (desligado) para a bomba nunca ligar no boot
-  digitalWrite(PIN_RELE, RELE_ATIVO_BAIXO ? HIGH : LOW);
-  pinMode(PIN_RELE, OUTPUT);
-  digitalWrite(PIN_RELE, RELE_ATIVO_BAIXO ? HIGH : LOW);
+  releInit();
   pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW);
   pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
   Serial.begin(115200);
   analogReadResolution(12);
   dht.begin();
+  est.exigirSolo = EXIGIR_SOLO_VALIDO;
 
   prefs.begin("g5", false);
   est.cfg.limiarSoloSecoPct = prefs.getInt("limiar", est.cfg.limiarSoloSecoPct);
