@@ -57,18 +57,30 @@ def test_device_id_fora_do_padrao_e_ignorado_e_desconhecido_vira_evento():
     assert consulta("SELECT * FROM leituras") == []
 
 
-def test_lwt_offline_abre_um_alerta_e_um_email_so(email_falso):
+def test_lwt_offline_abre_um_alerta_so():
     ficar_online()
     offline = {"v": 1, "deviceId": D, "status": "offline"}
     publicar(D, "status", offline)
     publicar(D, "status", offline)
     assert consulta("SELECT online FROM dispositivos WHERE id = :d", d=D) == [{"online": False}]
     assert len(consulta("SELECT * FROM alertas WHERE resolvido_em IS NULL")) == 1
-    [n] = consulta("SELECT motivo, enviada, erro FROM notificacoes")
-    assert n["motivo"] == "dispositivo_offline"
-    assert n["enviada"] is False and n["erro"] == "smtp_nao_configurado"
     eventos = [e["detalhe"] for e in consulta("SELECT detalhe FROM eventos WHERE tipo = 'status' ORDER BY id")]
     assert eventos == ["online", "offline"]
+
+
+def test_evento_guardado_offline_vai_para_o_historico_com_o_ts_original():
+    publicar(D, "evento", {"v": 1, "deviceId": D, "ts": "2026-11-24T09:15:00-03:00",
+                            "tipo": "bomba", "detalhe": "on (modo automatico, offline)"})
+    [e] = consulta("SELECT tipo, detalhe, criado_em FROM eventos")
+    assert (e["tipo"], e["detalhe"]) == ("bomba", "on (modo automatico, offline)")
+    assert e["criado_em"].isoformat().startswith("2026-11-24T12:15:00")
+
+
+@pytest.mark.parametrize("dados", [{"tipo": "xyz", "detalhe": "a"}, {"tipo": "modo", "detalhe": ""}])
+def test_evento_invalido_vira_mensagem_invalida(dados):
+    publicar(D, "evento", {"v": 1, "deviceId": D, "ts": None, **dados})
+    [e] = consulta("SELECT tipo FROM eventos")
+    assert e["tipo"] == "mensagem_invalida"
 
 
 def test_voltar_online_resolve_alerta():
@@ -229,9 +241,9 @@ def test_falha_de_sensor_repetida_vira_um_evento_por_minuto():
 
 def test_borda_da_bomba_no_estado_vira_evento():
     estado = {"v": 1, "deviceId": D, "modo": "automatico", "condicao": "inadequado", "led": "off", "buzzer": "off"}
-    publicar(D, "estado", {**estado, "bomba": "off"})  # boot: off -> off, nada
-    publicar(D, "estado", {**estado, "bomba": "on"})   # irrigacao local
-    publicar(D, "estado", {**estado, "bomba": "on"})   # estado periodico, sem borda
-    publicar(D, "estado", {**estado, "bomba": "off"})  # tempo acabou
+    publicar(D, "estado", {**estado, "bomba": "off"})
+    publicar(D, "estado", {**estado, "bomba": "on"})
+    publicar(D, "estado", {**estado, "bomba": "on"})
+    publicar(D, "estado", {**estado, "bomba": "off"})
     detalhes = [e["detalhe"] for e in consulta("SELECT detalhe FROM eventos WHERE tipo = 'bomba' ORDER BY id")]
     assert detalhes == ["on (modo automatico)", "off (modo automatico)"]

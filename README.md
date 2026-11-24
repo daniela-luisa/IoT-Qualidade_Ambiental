@@ -40,7 +40,7 @@ O hardware mede, a rede transporta, o backend valida, decide e guarda, a interfa
 ```
 ESP32 (estacao-01/02) ──MQTT──> Mosquitto ──> Backend FastAPI ──> PostgreSQL
       ^  telemetria, estado,                    │  valida contrato v1, grava,
-      │  confirmação, LWT                       │  regra de irrigação, alertas, e-mail
+      │  confirmação, LWT                       │  regra de irrigação, alertas
       └────────── comando (commandId) <─────────┘<── Interface web (login, comando, painel)
 ```
 
@@ -49,11 +49,11 @@ ESP32 (estacao-01/02) ──MQTT──> Mosquitto ──> Backend FastAPI ──
 | Parte | Responsabilidade |
 |---|---|
 | **Firmware** (`firmware/…/grupo5_estacao_ambiental.ino`) | Lê DHT11 (temperatura/umidade do ar), solo e LDR (ADC, em %), classifica a condição, publica telemetria a cada 5 s e estado a cada 30 s (e sempre que algo muda). Executa comandos com intertravamento, guarda a configuração na NVS, tem LWT, NTP e OTA. |
-| **Backend** (`backend/app`) | Assina os tópicos, valida cada mensagem contra o [contrato v1](CONTRATOS.md), grava leituras e eventos, acompanha o ciclo de cada comando, roda a regra de irrigação remota, abre/resolve alertas e envia e-mail. |
-| **Banco** (`db/schema.sql`) | Dispositivos, leituras, comandos (ciclo completo), regras, alertas, eventos, notificações e usuários (só hash bcrypt). |
+| **Backend** (`backend/app`) | Assina os tópicos, valida cada mensagem contra o [contrato v1.1](CONTRATOS.md), grava leituras e eventos, acompanha o ciclo de cada comando, roda a regra de irrigação remota e abre/resolve alertas. Recebe o histórico que a placa guardou enquanto estava sem conexão. |
+| **Banco** (`db/schema.sql`) | Dispositivos, leituras, comandos (ciclo completo), regras, alertas, eventos e usuários (só hash bcrypt). |
 | **Web** (`web/`) | Login (admin comanda, operador só vê), cartões online/offline com os sensores e atuadores **que cada estação tem** e suas últimas leituras, alertas, envio de comando (ligar/desligar), tabela de comandos com estado, painel analítico com média móvel, edição da regra e histórico de eventos. |
 
-### Comunicação (contrato MQTT v1)
+### Comunicação (contrato MQTT v1.1)
 
 Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e exemplos em [`CONTRATOS.md`](CONTRATOS.md).
 
@@ -64,6 +64,7 @@ Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e ex
 | `status` (retain, LWT) | dispositivo / broker | `online` ao conectar; `offline` publicado pelo broker se a placa cair |
 | `comando` | backend | quando um admin envia ou a regra decide |
 | `confirmacao` | dispositivo | `recebido` (ok ou `rejeitado` + motivo) → `executado` |
+| `evento` | dispositivo | botão BOOT apertado (`alarme` silenciado) e, ao reconectar, as mudanças de bomba, modo e condição que aconteceram sem conexão (as leituras desse período vão pela `telemetria`, com a hora original) |
 
 **Ciclo do comando:** `enviado` → `recebido` → `executado` → `confirmado` (o backend promove para confirmado ao ver o `estado` publicado logo depois). Finais alternativos: `rejeitado` (com motivo do catálogo), `falhou` (broker fora) e `expirado` (sem resposta em `COMANDO_TIMEOUT_S`).
 
@@ -71,9 +72,32 @@ Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e ex
 
 | Atuador | Efeito | Duração | Quem aciona |
 |---|---|---|---|
-| **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 5), desliga sozinha; nunca acima de `duracaoMaxS` | Admin, regra remota do backend ou regra local da placa |
-| **LED** (GPIO 26) | Alerta visual | 1 a 60 s (padrão 8) | Admin; **pisca sozinho** se a placa ficar sem broker com condição `inadequado` ou em modo seguro |
-| **Buzzer** (GPIO 25, `tone` 1 kHz) | Alerta sonoro | 1 a 60 s (padrão 8) | Admin |
+| **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 3), desliga sozinha; nunca acima de `duracaoMaxS`. O relé só fecha 1 s depois do "on", após 2 bipes de aviso | Admin, regra remota do backend ou regra local da placa; **travada** pelo backend com o reservatório vazio |
+| **LED** (GPIO 26) | Alerta visual | 1 a 60 s (padrão 8) por comando | Admin e backend (alarmes). Fora isso: aceso sem conexão com a planta em condição ruim, piscando com a estação com problema (tabela abaixo) |
+| **Buzzer** (GPIO 25, `tone` 1 kHz) | Alerta sonoro | 1 a 60 s (padrão 8) | Admin e backend (alarme de reservatório vazio, estação sem bomba). Sozinho, só os 2 bipes antes da bomba |
+| **Botão BOOT** (GPIO 0, da própria placa) | Silencia o alarme | — | Pessoa ao lado da planta: apaga LED/buzzer e avisa o backend, que para de repetir o alarme |
+
+**O que a estação sinaliza** (só 3 estados de LED e 2 sons, para qualquer pessoa entender):
+
+| Sinal | Significa |
+|---|---|
+| LED **apagado** | tudo certo |
+| LED **aceso** | a planta precisa de atenção: alarme do backend ou, sem conexão, condição `inadequado` (regra local) |
+| LED **piscando** | a estação está com problema: sem conexão com o broker ou sensor com falha (modo seguro) |
+| **2 bipes curtos** | a bomba vai ligar em 1 s |
+| **Bipe longo** | falta água: reservatório vazio (estação com bomba) ou regar à mão (estação sem bomba). Repete até alguém apertar o BOOT |
+
+Os alarmes (LED aceso + bipe longo) com a placa online são decididos pelo backend; a placa só mostra o estado dela e dá os 2 bipes de segurança antes da bomba.
+
+### Reservatório vazio
+
+O backend olha as últimas **3 irrigações** (desde o último reabastecimento): se, 1 min depois da última, a umidade do solo subiu **menos de 5 pontos**, a água não está chegando — reservatório vazio, bomba sem puxar ou sensor fora da terra. Então ele:
+
+1. abre o alerta **"Reservatório vazio?"** no painel;
+2. manda a placa **bloquear a bomba** (`config` `bombaBloqueada=1`, guardado na NVS): ela não irriga sozinha e rejeita `bomba on` com `bomba_bloqueada`;
+3. toca o **buzzer** (3 s) e acende o **LED** (60 s), repetindo a cada 10 min até alguém **apertar o BOOT** da placa.
+
+Depois de encher o reservatório, um admin clica em **"Reabasteci"** no alerta: o alerta é resolvido e o backend manda `bombaBloqueada=0`. Se a placa estiver offline nesse momento, o backend reenvia o desbloqueio quando ela voltar. Tudo passa pela rede e pelo ciclo de comando: a placa não decide nada sozinha, só obedece e confirma.
 
 ### Estação sem bomba
 
@@ -81,7 +105,7 @@ Cada placa declara no `estado` o que tem montado (`"recursos": {"sensores": [...
 
 - **Interface:** o cartão mostra só os sensores e atuadores daquela estação (com o selo "sem bomba"), o formulário de comando só oferece os atuadores que ela tem e o painel só mostra os gráficos dos sensores dela.
 - **Backend:** recusa comando para atuador que a estação não tem (`422 alvo_invalido`, nem publica) e o firmware também rejeita, se chegar.
-- **Solo seco sem bomba:** como não dá para irrigar, a regra **acende o LED** (fica aceso até o próximo aviso, máx. 60 s) e **toca o buzzer** (bipe com a duração da regra), abre o alerta "sem bomba: regar manualmente" e manda e-mail. Repete a cada intervalo mínimo enquanto o solo seguir seco e **apaga LED e buzzer** quando alguém rega e a umidade volta ao limiar.
+- **Solo seco sem bomba:** como não dá para irrigar, a regra **acende o LED** (fica aceso até o próximo aviso, máx. 60 s) e **toca o buzzer** (bipe com a duração da regra), abre o alerta "sem bomba: regar manualmente". Repete a cada intervalo mínimo enquanto o solo seguir seco e **apaga LED e buzzer** quando alguém rega e a umidade volta ao limiar.
 - Firmware antigo, sem o campo `recursos`, é tratado como "tem tudo".
 
 Toda vez que a bomba liga ou desliga de fato (inclusive pela regra local da placa, que não passa por comando), o backend registra um evento `bomba` e o painel conta em "Bomba ligou".
@@ -90,13 +114,27 @@ Toda vez que a bomba liga ou desliga de fato (inclusive pela regra local da plac
 
 - **Condição:** `inadequado` se solo abaixo de `limiarSoloSecoPct`, solo sem leitura ou temperatura fora de 10–32 °C; `atencao` se luz abaixo de 20 %; senão `adequado`.
 - **Modos:** `automatico` (normal); `manual` por 60 s depois de qualquer comando de pessoa (a irrigação automática — local e remota — pausa); `seguro` no boot e após 3 falhas seguidas de sensor (bomba desligada e só aceita comandos de desligar/config).
-- **Segurança da bomba:** só liga com leitura válida do solo; intervalo mínimo (`intervaloMinS`) entre irrigações; teto de duração; desligada durante OTA; relé em estado desligado desde o boot.
+- **Segurança da bomba:** só liga com leitura válida do solo; intervalo mínimo (`intervaloMinS`) entre irrigações; teto de duração; 2 bipes de aviso 1 s antes; travada com o reservatório vazio; desligada durante OTA; relé em estado desligado desde o boot.
 
 ### Regra de irrigação remota (backend)
 
-A cada `REGRAS_INTERVALO_S` o backend calcula a média da umidade do solo na janela configurada. Dispara `bomba on` (origem `regra`) — ou LED + buzzer na [estação sem bomba](#estação-sem-bomba) — quando **a média e a leitura mais recente** estão abaixo do limiar, a estação está online, fora dos modos `seguro`/`manual`, a bomba não está ligada e já passou o intervalo mínimo desde a última **tentativa** (comando rejeitado também conta — sem reenvio em loop). Abre o alerta `solo_seco` (e manda um e-mail) e o resolve quando a média volta ao limiar.
+A cada `REGRAS_INTERVALO_S` o backend calcula a média da umidade do solo na janela configurada. Dispara `bomba on` (origem `regra`) — ou LED + buzzer na [estação sem bomba](#estação-sem-bomba) — quando **a média e a leitura mais recente** estão abaixo do limiar, a estação está online, fora dos modos `seguro`/`manual`, a bomba não está ligada e já passou o intervalo mínimo desde a última **tentativa** (comando rejeitado também conta — sem reenvio em loop). Abre o alerta `solo_seco` e o resolve quando a média volta ao limiar. Não manda bomba com o alerta de reservatório vazio aberto e, na estação sem bomba, não toca mais o buzzer depois que alguém silenciou no BOOT.
 
 ## Como rodar
+
+**Pré-requisitos**
+
+- **Docker Desktop** (com Docker Compose): sobe broker, backend e banco.
+- **Arduino IDE 2** com:
+  - placas **esp32 by Espressif Systems** (Boards Manager; URL em *Settings → Additional boards manager URLs*:
+    `https://espressif.github.io/arduino-esp32/package_esp32_index.json`);
+  - bibliotecas (Library Manager): **DHT sensor library** e **Adafruit Unified Sensor** (Adafruit),
+    **PubSubClient** (Nick O'Leary) e **ArduinoJson** 7.x (Benoit Blanchon). `WiFi`, `Preferences` e
+    `ArduinoOTA` já vêm com as placas ESP32.
+- **Python 3.10+**: só para o simulador e os testes.
+- Notebook e placas na **mesma rede Wi-Fi 2,4 GHz**.
+
+**Subir o sistema (um comando):**
 
 ```bash
 cp .env.example .env              # troque as senhas e o JWT_SECRET (32+ caracteres; vazio o backend não sobe)
@@ -124,6 +162,22 @@ ADMIN_EMAIL=... ADMIN_PASSWORD=... python tests/e2e_smoke.py estacao-01
 
 Ajuste `DEVICE_ID` (`estacao-01` / `estacao-02`) e `TEM_BOMBA` (0 na placa que não tem relé/bomba) e grave. **Wokwi:** `MODO_SIMULADOR 1` (usa `Wokwi-GUEST` e `host.wokwi.internal`; precisa do Private IoT Gateway).
 
+**Gravar pela USB (primeira vez):**
+
+1. Abra `firmware/grupo5_estacao_ambiental/grupo5_estacao_ambiental.ino` no Arduino IDE.
+2. *Tools → Board →* **ESP32 Dev Module**; *Tools → Port →* a porta USB da placa (no macOS, `/dev/cu.usbserial-…`).
+3. *Tools → Upload Speed →* **115200** (em 921600 a gravação falha em algumas placas).
+4. **Upload**. Se travar em `Connecting...`, segure o botão **BOOT** até começar a gravar.
+5. Serial Monitor em **115200**: deve aparecer `[wifi] conectado` e `[mqtt] conectado`, e a estação fica online no painel.
+
+**Atualização remota por OTA (R17):** com a placa já gravada uma vez pela USB e ligada na mesma rede do notebook:
+
+1. Mude `FW_VERSION` no `.ino` (ex.: `1.6.0` → `1.6.1`) para enxergar a troca.
+2. *Tools → Port →* escolha a **porta de rede** `estacao-01 at <IP>` (aparece sozinha via mDNS; pode levar uns segundos).
+3. **Upload** e digite a senha `OTA_PASSWORD` do `secrets.h`. A bomba é desligada durante a atualização.
+4. A placa reinicia com o firmware novo: o cartão no painel mostra a versão nova e o backend registra o evento
+   `firmware_atualizado` (versão antiga → nova).
+
 **Testes** (precisa de um PostgreSQL de teste; o CI faz isso sozinho):
 
 ```bash
@@ -141,7 +195,8 @@ TEST_DATABASE_URL=postgresql+psycopg://macp:senha@localhost:5432/macp_test pytes
 
 ## Hardware detalhado
 
-- **Alimentação**: cabo USB conectado ao computador para os testes de bancada; possibilidade de uso de power bank 5V para demonstração fora da tomada.
+- **Lista de materiais e consumo**: [`docs/BOM.md`](docs/BOM.md) (componentes por nó e dimensionamento da alimentação).
+- **Alimentação**: ESP32 pelo cabo USB (computador ou power bank 5 V); bomba com fonte própria de 5 V / 2 A, GND comum, diodo 1N4007 de proteção.
 - **Protoboard**: protoboard padrão de 830 pontos.
 - **Estrutura/caixa**: suporte simples (impresso em 3D ou montado em caixa de papelão/acrílico) para fixar o ESP32 e os sensores próximo ao vaso da planta.
 - **Conectores**: jumpers macho-macho e macho-fêmea; resistor em série com o LED (conforme orientação de segurança do guia da disciplina).
@@ -157,7 +212,7 @@ As credenciais de Wi-Fi (`WIFI_SSID`, `WIFI_PASSWORD`), o IP do broker (`MQTT_HO
 
 ![Protótipo simulado no Wokwi](docs/prototipo_wokwi.jpeg)
 
-Protótipo montado com o ESP32 conectado aos sensores e atuadores via protoboard: DHT11 no GPIO14, sensor de solo e módulo LDR (saída digital) no GPIO35 e GPIO34, buzzer no GPIO25 e LED (com resistor em série) no GPIO26.
+Protótipo montado com o ESP32 conectado aos sensores e atuadores via protoboard: DHT11 no GPIO14, sensor de solo e módulo LDR (saída analógica, ADC1) no GPIO35 e GPIO34, buzzer no GPIO25, LED (com resistor em série) no GPIO26, relé da bomba no GPIO27 e o botão BOOT da placa (GPIO0) para silenciar o alarme. A imagem acima é a simulação no Wokwi da N1.
 
 **Status de validação:** o firmware foi validado em simulação (Wokwi, via Wokwi para VS Code com compilação local em PlatformIO) e também testado no protótipo físico montado em sala, já com os módulos reais de solo e luminosidade (saída digital) e o DHT11. A validação completa de ponta a ponta no físico — sensores + backend automático rodando juntos — ainda está em andamento.
 
@@ -233,7 +288,7 @@ python backend/decisor.py
 | Backend | Script `decisor` com interface de desktop | API que valida o contrato, regras remotas e comandos com `commandId` |
 | Banco | Não existia | PostgreSQL (medições, comandos, usuários) |
 | Interface | Cliente MQTT / log do script | Aplicação web com login, histórico, online/offline, alertas, comando e painel analítico |
-| Operação | Execução manual | Docker Compose, notificação por e-mail, perfis de usuário, testes e CI |
+| Operação | Execução manual | Docker Compose, histórico offline, perfis de usuário, testes e CI |
 
 ### Arquitetura-alvo (N3)
 
@@ -245,12 +300,45 @@ python backend/decisor.py
 
 ### Documentos do upgrade
 
-- [`CP12_EQUIPE-5_PARCIAL.pdf`](docs/CP12_EQUIPE-5_PARCIAL.pdf) — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026 (mesmo PDF entregue no Teams).
+- [`CP12_Proposta_de_upgrade_N1.docx`](docs/CP12_Proposta_de_upgrade_N1.docx) — proposta de upgrade do CP12, entrega de 20/10/2026.
 - As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) fazem parte da entrega completa do CP12 de 27/10/2026.
 
 > Instruções de instalação e execução (R11): veja [Como rodar](#como-rodar).
 
-- [`docs/Esquema_Eletrico_Por_No.jpeg`](docs/Esquema_Eletrico_Por_No.jpeg), [`docs/Fluxograma_Firmware.jpeg`](docs/Fluxograma_Firmware.jpeg), [`docs/mapa_de_pinos.md`](docs/mapa_de_pinos.md) e [`CONTRATOS.md`](CONTRATOS.md) (contrato MQTT v1): entregues no CP12 completo (27/10).
+- [`docs/Esquema_Eletrico_Por_No.jpeg`](docs/Esquema_Eletrico_Por_No.jpeg), [`docs/Fluxograma_Firmware.jpeg`](docs/Fluxograma_Firmware.jpeg), [`docs/mapa_de_pinos.md`](docs/mapa_de_pinos.md) e [`CONTRATOS.md`](CONTRATOS.md): entregues no CP12 completo (27/10). O contrato foi congelado como v1 no CP13 e evoluiu para **v1.1** (só acréscimos compatíveis; histórico de versões no topo do arquivo).
+- [`docs/BOM.md`](docs/BOM.md) (lista de materiais e alimentação) e [`docs/falhas.md`](docs/falhas.md) (cenários de falha do R10, com evidências em [`docs/evidencias/`](docs/evidencias/)).
+
+## Versões e release
+
+| O quê | Versão |
+|---|---|
+| Firmware (`FW_VERSION`) | 1.6.0 |
+| Contrato MQTT | v1.1 (campo `v` = 1) |
+| Produto defendido na N3 | tag **`n3-v1.0`** no GitHub |
+
+A versão defendida no seminário de 01/12 é a da tag `n3-v1.0` (release no GitHub). Para criar a tag depois do
+último commit:
+
+```bash
+git tag -a n3-v1.0 -m "Produto defendido na N3 (fw 1.6.0, contrato v1.1)"
+git push origin n3-v1.0
+```
+
+## Reaproveitamento e autoria
+
+Conforme a seção 4.2 dos requisitos da N3, o que foi aproveitado e de onde:
+
+- **Projeto de referência Sala Inteligente (disciplina):** usado como referência de arquitetura (dispositivo →
+  broker → backend → banco → web, decisão no backend, comando com confirmação). O modelo de dados, o contrato
+  MQTT, as regras (irrigação, reservatório vazio), o firmware e a interface foram escritos para o problema do
+  grupo (monitoramento de plantas e irrigação).
+- **Firmware:** núcleo Arduino-ESP32 da Espressif (`WiFi`, `Preferences`, `ArduinoOTA`), *DHT sensor library* e
+  *Adafruit Unified Sensor* (Adafruit), *PubSubClient* (Nick O'Leary) e *ArduinoJson* (Benoit Blanchon).
+- **Backend:** FastAPI, Uvicorn, paho-mqtt, SQLAlchemy, psycopg, PyJWT e bcrypt (versões em `backend/requirements.txt`).
+- **Interface:** Chart.js 4.4.7 (cópia local em `web/vendor/`); HTML, CSS e JavaScript próprios.
+- **Infraestrutura:** imagens oficiais do Eclipse Mosquitto e do PostgreSQL no Docker Compose.
+- **Assistente de IA:** partes do código e da documentação foram escritas com apoio de um assistente de IA
+  (Claude Code), revisadas, testadas e adaptadas pela equipe. Cada integrante consegue explicar as partes que usa.
 
 ## Backlog atualizado
 

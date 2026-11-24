@@ -7,6 +7,7 @@ from fastapi import Body, Depends, FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -43,7 +44,6 @@ def _laco(nome: str, intervalo_s: float, funcao) -> threading.Thread:
 async def lifespan(app: FastAPI):
     global ponte
     if not config.jwt_secret:
-        # sem segredo o token seria assinado com chave vazia: qualquer um forjaria um admin
         raise RuntimeError("JWT_SECRET vazio: defina no .env (32 ou mais caracteres)")
     if len(config.jwt_secret) < 32:
         log.warning("JWT_SECRET com menos de 32 caracteres: use um segredo mais longo")
@@ -114,9 +114,6 @@ def listar_dispositivos(usuario: dict = Depends(auth.usuario_logado)):
             FROM dispositivos ORDER BY id
             """,
         )
-        # Uma busca no indice (dispositivo, grandeza, medido_em DESC) por par, em vez de
-        # DISTINCT ON sobre a tabela inteira: a interface chama isto a cada 3 s e a tabela
-        # ganha ~70 mil linhas por dia por estacao.
         ultimas = db.linhas(
             conn,
             """
@@ -223,8 +220,6 @@ def painel(
             """,
             d=dispositivo_id, h=horas,
         )
-        # Cada vez que a bomba LIGOU de fato (evento gerado pelo estado do firmware),
-        # inclusive pela irrigacao local da placa, que nao passa pela tabela de comandos.
         acionamentos = db.linha(
             conn,
             """
@@ -294,6 +289,27 @@ def listar_alertas(
         ))
 
 
+@app.post("/api/alertas/{alerta_id}/resolver")
+def resolver_alerta(alerta_id: int, usuario: dict = Depends(exigir_admin)):
+    with db.transacao() as conn:
+        alerta = db.linha(
+            conn,
+            "SELECT id, dispositivo_id, tipo, resolvido_em FROM alertas WHERE id = :id FOR UPDATE",
+            id=alerta_id,
+        )
+        if alerta is None:
+            raise ErroApi(404, "alerta_desconhecido", str(alerta_id))
+        if alerta["tipo"] != "reservatorio_vazio":
+            raise ErroApi(422, "alerta_automatico", "este alerta se resolve sozinho")
+        if alerta["resolvido_em"] is not None:
+            raise ErroApi(409, "alerta_ja_resolvido", str(alerta_id))
+        conn.execute(text("UPDATE alertas SET resolvido_em = now() WHERE id = :id"), {"id": alerta_id})
+        db.registrar_evento(conn, alerta["dispositivo_id"], "reservatorio", f"reabastecido ({usuario['email']})")
+    desbloqueio = regras is not None and regras._comando_config(
+        ponte, alerta["dispositivo_id"], {"bombaBloqueada": 0}, origem="usuario", usuario_id=usuario["id"])
+    return {"id": alerta_id, "resolvido": True, "desbloqueioEnviado": bool(desbloqueio)}
+
+
 @app.get("/api/eventos")
 def listar_eventos(
     dispositivo_id: str | None = None,
@@ -327,7 +343,6 @@ def listar_regras(usuario: dict = Depends(auth.usuario_logado)):
         ))
 
 
-# campo, tipos aceitos, minimo, maximo (faixas do CONTRATOS.md)
 _FAIXAS_REGRA = (
     ("limiar", (int, float), 10, 80),
     ("janela_min", int, 1, 120),
@@ -340,7 +355,6 @@ def _validar_regra(corpo: dict) -> dict:
     regra = {}
     for campo, tipos, minimo, maximo in _FAIXAS_REGRA:
         valor = corpo.get(campo)
-        # bool e subclasse de int: True passaria como 1 sem o primeiro teste
         if isinstance(valor, bool) or not isinstance(valor, tipos) or not minimo <= valor <= maximo:
             tipo = "inteiro" if tipos is int else "numero"
             raise ErroApi(422, "valor_fora_da_faixa", f"{campo} deve ser {tipo} entre {minimo} e {maximo}")

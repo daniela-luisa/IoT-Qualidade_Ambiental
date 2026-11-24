@@ -1,7 +1,7 @@
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-TIPOS = {"dispositivo_offline", "solo_seco"}
+TIPOS = {"dispositivo_offline", "solo_seco", "reservatorio_vazio"}
 
 
 def abrir(conn: Connection, dispositivo_id: str, tipo: str, mensagem: str = "") -> bool:

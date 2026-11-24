@@ -1,9 +1,23 @@
 # Cenários de Falha Testados (R10)
 
-> **Instruções de preenchimento:**  
-> As seções "Observado" e "Evidência" devem ser preenchidas durante os ensaios
-> com os dispositivos físicos em 17/11. Não escreva o que não aconteceu.  
-> Os comandos de apoio abaixo já foram verificados com broker e simulador reais.
+> **Como preencher:** rode cada cenário com a **placa física** (`estacao-01`) e o sistema no ar
+> (`docker compose up -d`). Em "Observado", escreva só o que aconteceu de fato, com data e quem executou.
+> Em "Evidência", cole prints e logs: salve os arquivos em [`docs/evidencias/`](evidencias/) e coloque o link
+> aqui. Cenário sem evidência não conta para o R10. Na defesa, o professor escolhe um destes para repetir ao vivo.
+
+**Antes de começar (uma vez):**
+
+```bash
+docker compose up -d                       # broker, backend, banco
+docker compose logs -f backend             # deixe aberto em outro terminal (evidência do backend)
+# token para os curl (admin do .env):
+TOKEN=$(curl -s -X POST http://localhost:8000/api/login -H "Content-Type: application/json" \
+  -d '{"email":"SEU_ADMIN_EMAIL","senha":"SUA_SENHA"}' | jq -r .token)
+# consultas no banco:
+docker exec -it macp-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+```
+
+Deixe o **Serial Monitor** (115200) aberto e o **painel** (http://localhost:8000) logado como admin.
 
 ---
 
@@ -11,38 +25,45 @@
 
 ### Como provocar
 
-1. Com o simulador rodando e a estação `estacao-01` online, desligue o Wi-Fi
-   do dispositivo (ou, no Wokwi, interrompa a conectividade de rede).
-2. Aguarde o LWT (Last Will and Testament) chegar ao broker. O MQTT publica
-   automaticamente a mensagem de status `offline` configurada na conexão.
+1. Com a `estacao-01` online no painel, **desligue a rede Wi-Fi** que a placa usa (desligue o roteador/hotspot
+   ou afaste a placa) por **1 a 2 minutos**.
+2. Observe a placa e o painel. Depois religue a rede.
 
-**Comando de apoio (verificar no banco):**
+**Consultas de apoio:**
 
 ```sql
--- Confirma que o dispositivo ficou offline e o alerta foi aberto
+-- ficou offline e o alerta abriu (e depois resolveu)
 SELECT online, ultimo_contato FROM dispositivos WHERE id = 'estacao-01';
 SELECT tipo, mensagem, aberto_em, resolvido_em
   FROM alertas WHERE dispositivo_id = 'estacao-01' ORDER BY aberto_em DESC LIMIT 3;
-SELECT motivo, enviada, erro, criado_em
-  FROM notificacoes WHERE dispositivo_id = 'estacao-01' ORDER BY criado_em DESC LIMIT 3;
+-- depois que voltou: leituras do periodo offline chegaram com a hora em que foram medidas
+SELECT grandeza, valor, medido_em, recebido_em
+  FROM leituras WHERE dispositivo_id = 'estacao-01' AND recebido_em - medido_em > interval '30 seconds'
+  ORDER BY medido_em DESC LIMIT 10;
+SELECT tipo, detalhe, criado_em
+  FROM eventos WHERE dispositivo_id = 'estacao-01' AND detalhe LIKE '%offline%' ORDER BY criado_em DESC LIMIT 10;
 ```
 
 ### Comportamento esperado
 
-- O campo `online` do dispositivo passa para `false`.
-- Um alerta `dispositivo_offline` é aberto (ou reutilizado se já existia).
-- Uma tentativa de e-mail é registrada em `notificacoes`
-  (`enviada = true` se SMTP configurado, `erro = 'smtp_nao_configurado'` caso contrário).
-- Quando o Wi-Fi volta, o dispositivo publica `status: online` e o alerta é
-  resolvido (`resolvido_em` preenchido).
+- **Placa (regra local, sem rede):** continua lendo os sensores e irrigando sozinha se o solo secar. O LED fica
+  **aceso** se a condição for `inadequado`, ou **piscando** (sem conexão) se não for. A serial mostra
+  `[historico] sem broker: N leitura(s) ... guardados`.
+- **Backend:** em uns 20 s (keepalive de 15 s) o broker publica o Last Will `offline`; o dispositivo fica
+  `online = false` e abre o alerta `dispositivo_offline`. O cartão no painel fica "offline".
+- **Volta:** a placa reconecta sozinha (sem reinício), publica `status: online`, o alerta é resolvido e ela
+  reenvia as leituras e os eventos guardados com a hora original (serial: `[historico] reenvio concluido`).
+  O gráfico do painel não fica com buraco.
 
 ### Observado
 
-> _(preencher em 17/11 com o sistema físico)_
+> _Data / quem executou:_
+> _O que aconteceu na placa, no painel e no banco:_
 
 ### Evidência
 
-> _(print da aba Actions / log do backend / linhas do banco — inserir em 17/11)_
+> _Serial com `[historico]` e `[mqtt] conectado`; print do painel offline e depois online; resultado das
+> consultas acima. Arquivos em `docs/evidencias/c1-*`._
 
 ---
 
@@ -56,48 +77,44 @@ SELECT motivo, enviada, erro, criado_em
    docker compose stop mosquitto
    ```
 
-2. Tente enviar um comando pela API:
+2. Tente enviar um comando pela API (ou pelo painel):
 
    ```bash
    curl -s -X POST http://localhost:8000/api/comandos \
-     -H "Authorization: Bearer $TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":5}' | jq .
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"dispositivoId":"estacao-01","alvo":"led","duracaoS":5}' | jq .
    ```
 
-3. Suba o broker novamente e tente outro comando:
+3. Suba o broker de novo, espere uns 10 s e repita o comando:
 
    ```bash
    docker compose start mosquitto
-   # Aguarde ~6 s para reconexão automática, depois repita o curl acima.
    ```
 
-**Comando de apoio:**
+**Consulta de apoio:**
 
 ```sql
--- Confirma que o primeiro comando ficou como 'falhou'
-SELECT comando_id, estado, motivo, enviado_em
-  FROM comandos ORDER BY enviado_em DESC LIMIT 5;
+SELECT comando_id, estado, motivo, enviado_em FROM comandos ORDER BY enviado_em DESC LIMIT 5;
 ```
 
 ### Comportamento esperado
 
-- Com o broker fora, a API retorna **HTTP 503** com
-  `{"codigo": "broker_indisponivel"}`.
-- O comando é gravado no banco com `estado = 'falhou'` e
-  `motivo = 'broker_indisponivel'`.
-- Após o broker subir, backend e simuladores reconectam automaticamente
-  (cerca de 6 s — `reconnect_delay_set(min=1, max=5)`).
-- Um novo comando enviado após a reconexão é publicado normalmente e
-  segue o ciclo `enviado → recebido → executado → confirmado`.
+- **API:** com o broker fora, responde **HTTP 503** `{"codigo": "broker_indisponivel"}` e o comando fica no
+  banco como `estado = 'falhou'`, `motivo = 'broker_indisponivel'`.
+- **Placa:** a serial mostra `[mqtt] falhou rc=...` a cada 5 s; a regra local continua valendo e as leituras são
+  guardadas para reenvio (como no cenário 1).
+- **Volta:** backend e placa reconectam sozinhos, sem reinício. O comando repetido segue
+  `enviado → recebido → executado → confirmado` e o LED acende.
 
 ### Observado
 
-> _(preencher em 17/11 com o sistema físico)_
+> _Data / quem executou:_
+> _O que aconteceu:_
 
 ### Evidência
 
-> _(print do terminal com o 503, print da aba Actions ou log do backend mostrando reconexão, linhas do banco — inserir em 17/11)_
+> _Print do 503; log do backend reconectando; serial com `[mqtt] conectado`; linhas da tabela `comandos`
+> (`falhou` e depois `confirmado`). Arquivos em `docs/evidencias/c2-*`._
 
 ---
 
@@ -105,57 +122,43 @@ SELECT comando_id, estado, motivo, enviado_em
 
 ### Como provocar
 
-**Opção A — simulador com flag:**
+**Na placa (principal):** com a placa ligada, **solte o fio AO do sensor de solo** (GPIO 35). Para testar o DHT11,
+solte o fio de dados (GPIO 14). Depois de observar, religue o fio.
+
+**Payload inválido direto no broker (complementar, para mostrar a validação do backend):**
 
 ```bash
-python tests/simulador_dispositivo.py \
-  --device estacao-01 --host localhost --falha-sensor
-```
-
-**Opção B — payload manual via mosquitto_pub:**
-
-```bash
-# Valor nulo
-mosquitto_pub -h localhost -t "grupo5/estacao-01/telemetria/temperatura" \
-  -m '{"v":1,"deviceId":"estacao-01","ts":null,"valor":null}'
-
-# Valor fora da faixa (temperatura máxima é 50 °C)
-mosquitto_pub -h localhost -t "grupo5/estacao-01/telemetria/temperatura" \
+docker exec macp-mosquitto mosquitto_pub -t "grupo5/estacao-01/telemetria/temperatura" \
   -m '{"v":1,"deviceId":"estacao-01","ts":null,"valor":99}'
-
-# Duração inválida num comando (bomba aceita 1–15 s)
-curl -s -X POST http://localhost:8000/api/comandos \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":99}' | jq .
 ```
 
-**Comando de apoio:**
+**Consultas de apoio:**
 
 ```sql
--- Confirma evento falha_sensor e ausência de leitura inválida
-SELECT tipo, detalhe, criado_em FROM eventos
-  WHERE tipo = 'falha_sensor' ORDER BY criado_em DESC LIMIT 5;
-SELECT count(*) FROM leituras WHERE valor > 50 AND grandeza = 'temperatura';
+SELECT tipo, detalhe, criado_em FROM eventos WHERE tipo = 'falha_sensor' ORDER BY criado_em DESC LIMIT 5;
+SELECT modo FROM dispositivos WHERE id = 'estacao-01';
+SELECT count(*) FROM leituras WHERE grandeza = 'temperatura' AND valor > 50;   -- deve ser 0
 ```
 
 ### Comportamento esperado
 
-- Valor `null` ou fora da faixa: o backend registra um evento `falha_sensor`
-  com o detalhe da grandeza e do valor recebido. Nenhuma leitura é gravada
-  em `leituras`.
-- Comando com `duracaoS: 99` (bomba aceita 1–15 s): API retorna **HTTP 422**
-  com `{"codigo": "valor_fora_da_faixa"}`. Nenhum comando é gravado.
-- O sistema continua processando mensagens subsequentes normalmente
-  (a falha não derruba o handler).
+- **Placa:** a serial mostra `solo=nan% (raw ... INVALIDO)` e `[solo] sem leitura valida: bomba bloqueada`.
+  Depois de **3 leituras seguidas com falha** (~15 s) ela entra em **modo seguro**: bomba desligada, LED
+  **piscando**, e `bomba on` é rejeitado com `modo_seguro`.
+- **Backend:** a telemetria chega com `valor: null` e vira evento `falha_sensor` (no máximo 1 por minuto por
+  grandeza); nenhuma leitura inválida é gravada. O cartão mostra "Modo seguro".
+- **Volta:** ao religar o fio, a primeira leitura válida tira a placa do modo seguro (volta a `automatico`).
+- **Payload com 99 °C:** vira `falha_sensor` (fora de 0 a 50 °C) e não é gravado.
 
 ### Observado
 
-> _(preencher em 17/11 com o sistema físico)_
+> _Data / quem executou:_
+> _O que aconteceu:_
 
 ### Evidência
 
-> _(print do terminal com o 422, linhas da tabela eventos, confirmação de que leituras não foram gravadas — inserir em 17/11)_
+> _Serial com `INVALIDO` e `modo=seguro`; print do cartão em modo seguro; comando de bomba rejeitado com
+> `modo_seguro` na tabela de comandos; linhas de `eventos`. Arquivos em `docs/evidencias/c3-*`._
 
 ---
 
@@ -163,74 +166,74 @@ SELECT count(*) FROM leituras WHERE valor > 50 AND grandeza = 'temperatura';
 
 ### Como provocar
 
-**Comando inválido (alvo desconhecido):**
+**Inválido na API (alvo desconhecido e duração fora da faixa):**
 
 ```bash
 curl -s -X POST http://localhost:8000/api/comandos \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"dispositivoId":"estacao-01","alvo":"ventilador"}' | jq .
+curl -s -X POST http://localhost:8000/api/comandos \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":99}' | jq .
 ```
 
-**Comando duplicado (intertravamento de intervalo):**
+**Bloqueado por intertravamento (bomba duas vezes seguidas, com o solo na terra):**
 
 ```bash
-# Primeiro comando — deve ser aceito
-curl -s -X POST http://localhost:8000/api/comandos \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":5}' | jq .
-
-# Segundo comando imediato — deve ser rejeitado pelo firmware com motivo
-# 'intertravamento_intervalo' via mensagem de confirmação
-curl -s -X POST http://localhost:8000/api/comandos \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":5}' | jq .
+for i in 1 2; do
+  curl -s -X POST http://localhost:8000/api/comandos \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"dispositivoId":"estacao-01","alvo":"bomba","duracaoS":3}' | jq .
+done
 ```
 
-**Comando de apoio:**
+**Duplicado (mesmo `commandId` entregue duas vezes à placa):**
+
+```bash
+for i in 1 2; do
+  docker exec macp-mosquitto mosquitto_pub -t "grupo5/estacao-01/comando" \
+    -m '{"v":1,"commandId":"c-20261124-9999","alvo":"led","acao":"on","duracaoS":3,"origem":"usuario"}'
+done
+```
+
+**Consultas de apoio:**
 
 ```sql
--- Verifica estados e motivos dos dois comandos
-SELECT comando_id, estado, motivo, enviado_em FROM comandos
-  ORDER BY enviado_em DESC LIMIT 5;
-
--- Verifica evento de motivo fora do catálogo (se firmware mandar texto novo)
-SELECT tipo, detalhe FROM eventos
-  WHERE tipo = 'mensagem_invalida' ORDER BY id DESC LIMIT 5;
+SELECT comando_id, estado, motivo, enviado_em FROM comandos ORDER BY enviado_em DESC LIMIT 5;
+SELECT tipo, detalhe FROM eventos WHERE tipo = 'mensagem_invalida' ORDER BY id DESC LIMIT 5;
 ```
 
 ### Comportamento esperado
 
-- Alvo inválido (`ventilador`): API retorna **HTTP 422** com
-  `{"codigo": "alvo_invalido"}`. Nada é gravado no banco.
-- Segundo comando de bomba em sequência rápida: o firmware rejeita via
-  mensagem de confirmação com `resultado: "rejeitado"` e
-  `motivo: "intertravamento_intervalo"`. O backend grava o comando como
-  `estado = 'rejeitado'` com o motivo correspondente.
-- Se o firmware enviar um motivo fora do catálogo dos 8 motivos definidos
-  no contrato, o backend registra o estado mas também cria um evento
-  `mensagem_invalida` com o motivo recebido.
+- **API:** `ventilador` → **HTTP 422** `alvo_invalido`; `duracaoS: 99` → **HTTP 422** `valor_fora_da_faixa`.
+  Nada é publicado nem gravado.
+- **Intertravamento:** o primeiro comando de bomba é confirmado; o segundo é rejeitado pela placa com
+  `intertravamento_intervalo` e aparece como **Rejeitado** com o motivo na tabela de comandos do painel.
+- **Duplicado:** a serial mostra o primeiro aceito e o segundo `[cmd] rejeitado: comando_duplicado`.
+  Como esse comando foi publicado à mão (não passou pela API), o backend registra as confirmações como
+  `mensagem_invalida` ("confirmacao de comando desconhecido"): é a validação do backend agindo também.
+- Motivo fora do catálogo (9 motivos do contrato) vira evento `mensagem_invalida`.
 
 ### Observado
 
-> _(preencher em 17/11 com o sistema físico)_
+> _Data / quem executou:_
+> _O que aconteceu:_
 
 ### Evidência
 
-> _(print do terminal com o 422, linhas do banco mostrando estado 'rejeitado' e o motivo — inserir em 17/11)_
+> _Prints dos 422; print da tabela de comandos com "Rejeitado — intertravamento"; serial com
+> `comando_duplicado`. Arquivos em `docs/evidencias/c4-*`._
 
 ---
 
 ## Resumo dos cenários
 
-| # | Cenário                        | Código HTTP / estado banco          | Motivo / tipo evento          |
-|---|--------------------------------|-------------------------------------|-------------------------------|
-| 1 | Queda de Wi-Fi                 | `online = false`                    | alerta `dispositivo_offline`  |
-| 2 | Broker indisponível            | 503 / `estado = 'falhou'`           | `broker_indisponivel`         |
-| 3 | Falha de sensor                | 422 (comando) / evento `falha_sensor` | `valor_fora_da_faixa`        |
-| 4 | Comando inválido ou duplicado  | 422 (inválido) / `estado = 'rejeitado'` | `intertravamento_intervalo` |
+| # | Cenário | O que comprova | Resultado esperado principal |
+|---|---------|----------------|------------------------------|
+| 1 | Queda de Wi-Fi | regra local, LWT, reconexão, histórico offline | `online = false` + alerta; volta sozinho e reenvia o histórico |
+| 2 | Broker indisponível | backend e placa sobrevivem ao broker fora | 503 / `falhou`; reconexão automática |
+| 3 | Falha de sensor | validação e estado seguro | modo seguro, bomba bloqueada, evento `falha_sensor` |
+| 4 | Comando inválido ou duplicado | validação e intertravamento | 422; `rejeitado` com motivo; `comando_duplicado` |
 
 ---
 

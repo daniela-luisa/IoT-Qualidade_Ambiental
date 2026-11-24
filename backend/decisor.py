@@ -1,11 +1,3 @@
-"""
-decisor.py — Monitor legado com lógica de decisão por condição ambiental.
-
-A função decidir() é testável de forma isolada (sem tkinter/paho).
-A classe App e o loop MQTT só são carregados quando o script é executado
-diretamente, evitando ImportError em ambientes sem display (CI, servidor).
-"""
-
 from datetime import datetime
 
 BROKER = "broker.hivemq.com"
@@ -17,12 +9,6 @@ TOPIC_CMD_BUZZER = "grupo5/comando/buzzer"
 
 
 def decidir(condicao):
-    """
-    Mapeia a condição ambiental para os comandos de LED e buzzer.
-
-    Returns:
-        (led_cmd, buzzer_cmd) — cada um "on" ou "off"
-    """
     if condicao == "inadequado":
         return ("on", "on")
     elif condicao == "atencao":

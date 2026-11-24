@@ -38,10 +38,11 @@ def esperar_banco(tentativas: int = 30, intervalo_s: float = 2.0) -> None:
     raise RuntimeError("banco nao respondeu na partida")
 
 
-# Alteracoes de schema depois da primeira subida: o schema.sql so roda com o volume do
-# Postgres vazio, entao um banco ja criado recebe as colunas novas aqui (idempotente).
 MIGRACOES = (
     "ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS recursos jsonb",
+    "ALTER TABLE alertas DROP CONSTRAINT IF EXISTS alertas_tipo_check",
+    "ALTER TABLE alertas ADD CONSTRAINT alertas_tipo_check "
+    "CHECK (tipo IN ('dispositivo_offline', 'solo_seco', 'reservatorio_vazio'))",
 )
 
 

@@ -32,11 +32,6 @@ class Config:
     admin_password: str
     operador_email: str
     operador_password: str
-    smtp_host: str
-    smtp_port: int
-    smtp_user: str
-    smtp_password: str
-    alerta_destino: str
     regras_intervalo_s: int
     web_dir: str
 
@@ -67,11 +62,6 @@ def carregar() -> Config:
         admin_password=_texto("ADMIN_PASSWORD"),
         operador_email=_texto("OPERADOR_EMAIL"),
         operador_password=_texto("OPERADOR_PASSWORD"),
-        smtp_host=_texto("SMTP_HOST"),
-        smtp_port=_inteiro("SMTP_PORT", 587),
-        smtp_user=_texto("SMTP_USER"),
-        smtp_password=_texto("SMTP_PASSWORD"),
-        alerta_destino=_texto("ALERTA_DESTINO"),
         regras_intervalo_s=_inteiro("REGRAS_INTERVALO_S", 15),
         web_dir=_texto("WEB_DIR") or _web_padrao(),
     )
