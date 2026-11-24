@@ -216,3 +216,22 @@ def test_payload_publicado_segue_o_contrato(ponte):
     assert (payload["alvo"], payload["acao"], payload["duracaoS"], payload["origem"]) == ("bomba", "on", 7, "usuario")
     ts = contrato.interpretar_ts(payload["ts"], None)
     assert ts is not None and ts.utcoffset() == timedelta(hours=-3)
+
+
+def test_falha_de_sensor_repetida_vira_um_evento_por_minuto():
+    for _ in range(5):
+        publicar(D, "telemetria/umidade_solo", {"v": 1, "deviceId": D, "ts": None, "valor": None})
+    publicar(D, "telemetria/temperatura", {"v": 1, "deviceId": D, "ts": None, "valor": None})
+    detalhes = [e["detalhe"] for e in consulta("SELECT detalhe FROM eventos WHERE tipo = 'falha_sensor' ORDER BY id")]
+    assert len(detalhes) == 2
+    assert detalhes[0].startswith("umidade_solo ") and detalhes[1].startswith("temperatura ")
+
+
+def test_borda_da_bomba_no_estado_vira_evento():
+    estado = {"v": 1, "deviceId": D, "modo": "automatico", "condicao": "inadequado", "led": "off", "buzzer": "off"}
+    publicar(D, "estado", {**estado, "bomba": "off"})  # boot: off -> off, nada
+    publicar(D, "estado", {**estado, "bomba": "on"})   # irrigacao local
+    publicar(D, "estado", {**estado, "bomba": "on"})   # estado periodico, sem borda
+    publicar(D, "estado", {**estado, "bomba": "off"})  # tempo acabou
+    detalhes = [e["detalhe"] for e in consulta("SELECT detalhe FROM eventos WHERE tipo = 'bomba' ORDER BY id")]
+    assert detalhes == ["on (modo automatico)", "off (modo automatico)"]

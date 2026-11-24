@@ -6,6 +6,11 @@ const GRANDEZAS = {
   umidade_solo: { nome: "Umidade do solo", un: "%" }, luminosidade: { nome: "Luminosidade", un: "%" },
 };
 const ATUADORES = { bomba: "Bomba", led: "LED", buzzer: "Buzzer" };
+const DUR_MAX = { bomba: 15, led: 60, buzzer: 60 };
+// o que a estacao declarou ter (o backend completa com "tudo" se ela nunca declarou)
+const TODOS = { sensores: Object.keys(GRANDEZAS), atuadores: Object.keys(ATUADORES) };
+const recursosDe = (id) => (dispositivos.find((d) => d.id === id) || {}).recursos || TODOS;
+const temBomba = (rec) => rec.atuadores.includes("bomba");
 const SEM_DADOS_S = 30; // sem mensagem ha mais que isso: mostra aviso mesmo que o status diga online
 const LIMITE_MS = 8000; // tempo maximo esperando o backend antes de considerar que ele nao respondeu
 const SEM_CONEXAO = "Não foi possível conectar ao servidor";
@@ -106,6 +111,7 @@ async function carregarListas() {
     dispositivos.forEach((d) => { const o = el("option", d.nome); o.value = d.id; s.appendChild(o); });
   }
   preencherRegra();
+  opcoesAlvo();
   listasProntas = true;
   atualizarPainel();
 }
@@ -138,6 +144,7 @@ async function atualizarDados() {
       api("/alertas"), api("/eventos?limite=12")]);
     dispositivos = d;
     cartoes(d); tabelaComandos(c); listaAlertas(a); listaEventos(e);
+    opcoesAlvo(); textosRegra(); // uma estacao pode ter acabado de declarar o que tem
   } catch (err) {
     cartoes(dispositivos); // sem resposta: redesenha o ultimo dado para o "último contato" continuar contando
   }
@@ -154,9 +161,16 @@ function cartoes(lista) {
     else if (idade > SEM_DADOS_S) cab.appendChild(badge("sem dados", "warn"));
     else cab.appendChild(badge("online", "ok"));
     card.appendChild(cab);
+    const rec = d.recursos || TODOS;
+    if (!temBomba(rec)) cab.appendChild(badge("sem bomba", ""));
     card.appendChild(el("p", `Último contato: ${atras(d.ultimo_contato)} · modo ${d.modo || "-"} · condição ${d.condicao || "-"} · fw ${d.fw || "-"}`, "mudo"));
+    const nomes = (lista, mapa) => lista.map((k) => mapa[k]).join(", ") || "nenhum";
+    card.appendChild(el("p", `Sensores: ${nomes(rec.sensores, Object.fromEntries(Object.entries(GRANDEZAS).map(([k, v]) => [k, v.nome])))}`
+      + ` · Atuadores: ${nomes(rec.atuadores, ATUADORES)}${d.recursos_declarados === false ? " (padrão: a estação ainda não informou)" : ""}`, "mudo pequena"));
+    if (!temBomba(rec)) card.appendChild(el("p", "Sem bomba: com o solo seco, o sistema acende o LED e toca o buzzer para alguém regar.", "mudo pequena"));
     const grade = el("div", null, "leituras"), leituras = d.leituras || {};
     for (const [g, info] of Object.entries(GRANDEZAS)) {
+      if (!rec.sensores.includes(g)) continue;
       const l = leituras[g];
       const box = el("div", null, "leit");
       box.appendChild(el("span", info.nome));
@@ -166,7 +180,7 @@ function cartoes(lista) {
     }
     card.appendChild(grade);
     const at = el("div", null, "atuadores"), est = d.ultimo_estado || {};
-    for (const [n, nome] of Object.entries(ATUADORES)) at.appendChild(badge(`${nome}: ${est[n] || "-"}`, est[n] === "on" ? "warn" : ""));
+    for (const n of rec.atuadores) at.appendChild(badge(`${ATUADORES[n]}: ${est[n] || "-"}`, est[n] === "on" ? "warn" : ""));
     card.appendChild(at);
     raiz.appendChild(card);
   }
@@ -202,17 +216,33 @@ function listaEventos(lista) {
 
 // ---------------------------------------------------------------- enviar comando
 // duracao maxima do contrato: bomba 15 s, LED e buzzer 60 s
+// Alvo: so os atuadores que a estacao escolhida tem (a estacao sem bomba nao oferece "Bomba")
+function opcoesAlvo() {
+  const s = $("cmd-alvo"), atual = s.value, lista = recursosDe($("cmd-disp").value).atuadores;
+  if ([...s.options].map((o) => o.value).join() === lista.join()) return; // nada mudou: nao mexe na escolha
+  s.textContent = "";
+  for (const a of lista) { const o = el("option", `${ATUADORES[a]} (1 a ${DUR_MAX[a]} s)`); o.value = a; s.appendChild(o); }
+  if (lista.includes(atual)) s.value = atual;
+  limitarDuracao();
+}
+$("cmd-disp").addEventListener("change", opcoesAlvo);
+
+// "Desligar" nao leva duracao: o campo fica desabilitado (e fora da validacao do formulario)
 function limitarDuracao() {
-  const max = $("cmd-alvo").value === "bomba" ? 15 : 60;
+  const max = DUR_MAX[$("cmd-alvo").value] || 60;
   $("cmd-dur").max = max; if (Number($("cmd-dur").value) > max) $("cmd-dur").value = max;
+  $("cmd-dur").disabled = $("cmd-acao").value === "off";
 }
 $("cmd-alvo").addEventListener("change", limitarDuracao);
+$("cmd-acao").addEventListener("change", limitarDuracao);
 $("form-comando").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const msg = $("cmd-msg"); msg.textContent = "Enviando...";
   try {
-    const c = await api("/comandos", { method: "POST", body: JSON.stringify({
-      dispositivoId: $("cmd-disp").value, alvo: $("cmd-alvo").value, acao: "on", duracaoS: Number($("cmd-dur").value) }) });
+    const acao = $("cmd-acao").value;
+    const corpo = { dispositivoId: $("cmd-disp").value, alvo: $("cmd-alvo").value, acao };
+    if (acao === "on") corpo.duracaoS = Number($("cmd-dur").value);
+    const c = await api("/comandos", { method: "POST", body: JSON.stringify(corpo) });
     msg.textContent = `Comando ${c.comando_id} registrado como "${c.estado}". Acompanhe o estado na tabela abaixo.`;
   } catch (e) {
     if (!sessao) return; // 401: ja voltou para o login
@@ -235,22 +265,28 @@ async function atualizarPainel() {
   if (disp !== $("pn-disp").value || horas !== $("pn-horas").value) return; // a selecao mudou durante a espera
   const resumo = $("resumo"); resumo.textContent = "";
   const caixa = (t, v) => { const b = el("div", null, "leit"); b.appendChild(el("span", t)); b.appendChild(el("b", v)); resumo.appendChild(b); };
-  caixa("Irrigações confirmadas", String(p.irrigacoes));
+  const rec = p.recursos || TODOS;
+  if (temBomba(rec)) {
+    caixa("Irrigações confirmadas (comandos)", String(p.irrigacoes));
+    if (p.acionamentos_bomba != null) caixa("Bomba ligou (inclui regra local)", String(p.acionamentos_bomba));
+  }
   caixa("Alertas no período", String(p.alertas));
   for (const [g, info] of Object.entries(GRANDEZAS)) {
+    if (!rec.sensores.includes(g)) continue;
     const a = p.grandezas[g];
     caixa(`${info.nome} (mín / média / máx)`, a.n ? `${fmt(a.minimo)} / ${fmt(a.media)} / ${fmt(a.maximo)} ${a.unidade || info.un}` : "sem dados");
   }
   const raiz = $("graficos");
   for (const [g, info] of Object.entries(GRANDEZAS)) {
     if (!charts[g]) {
-      const wrap = el("div", null, "g"); const cv = document.createElement("canvas"); wrap.appendChild(cv); raiz.appendChild(wrap);
+      const wrap = el("div", null, "g"); wrap.id = "g-" + g; const cv = document.createElement("canvas"); wrap.appendChild(cv); raiz.appendChild(wrap);
       charts[g] = new Chart(cv, { type: "line", data: { labels: [], datasets: [
         { label: `${info.nome} (${info.un})`, data: [], borderColor: "#1f6feb", pointRadius: 1.5, tension: 0.2 },
         { label: "média móvel", data: [], borderColor: "#e08a00", borderDash: [5, 4], pointRadius: 0, tension: 0.3 }] },
         options: { responsive: true, maintainAspectRatio: false, animation: false,
           plugins: { title: { display: true, text: info.nome } }, scales: { y: { beginAtZero: false } } } });
     }
+    $("g-" + g).hidden = !rec.sensores.includes(g); // grafico so dos sensores que a estacao tem
     const serie = p.grandezas[g].serie, movel = p.grandezas[g].media_movel, ch = charts[g];
     ch.data.labels = serie.map((s) => lerData(s.t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }));
     ch.data.datasets[0].data = serie.map((s) => s.valor);
@@ -264,6 +300,15 @@ function preencherRegra() {
   const r = regras.find((x) => x.dispositivo_id === $("rg-disp").value) || {}; // sem regra: campos vazios
   $("rg-limiar").value = r.limiar ?? ""; $("rg-janela").value = r.janela_min ?? ""; $("rg-intervalo").value = r.intervalo_min_s ?? "";
   $("rg-dur").value = r.duracao_s ?? ""; $("rg-ativa").checked = !!r.ativa;
+  textosRegra();
+}
+// a mesma regra age diferente na estacao sem bomba: explica isso no formulario
+function textosRegra() {
+  const com = temBomba(recursosDe($("rg-disp").value));
+  $("rg-desc").textContent = com
+    ? "Se a umidade do solo ficar abaixo do limiar durante a janela, o backend envia um comando de bomba."
+    : "Esta estação não tem bomba: com o solo abaixo do limiar, o backend acende o LED e toca o buzzer (repete a cada intervalo mínimo) até alguém regar.";
+  $("rg-dur-rotulo").textContent = com ? "Duração da bomba (s)" : "Duração do bipe do buzzer (s)";
 }
 $("rg-disp").addEventListener("change", preencherRegra);
 $("form-regra").addEventListener("submit", async (ev) => {

@@ -161,6 +161,7 @@ def test_painel_usa_dado_real_do_banco(cliente, ponte, h_admin):
     assert (t["minimo"], t["maximo"], t["media"], t["n"]) == (20, 40, 30, 3)
     assert t["serie"] and len(t["serie"]) == len(t["media_movel"])
     assert p["irrigacoes"] == 1
+    assert p["acionamentos_bomba"] == 1
     assert p["grandezas"]["umidade_ar"]["serie"] == []
 
 

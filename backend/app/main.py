@@ -42,8 +42,14 @@ def _laco(nome: str, intervalo_s: float, funcao) -> threading.Thread:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ponte
+    if not config.jwt_secret:
+        # sem segredo o token seria assinado com chave vazia: qualquer um forjaria um admin
+        raise RuntimeError("JWT_SECRET vazio: defina no .env (32 ou mais caracteres)")
+    if len(config.jwt_secret) < 32:
+        log.warning("JWT_SECRET com menos de 32 caracteres: use um segredo mais longo")
     db.iniciar(config.db_url)
     db.esperar_banco()
+    db.migrar()
     auth.garantir_usuarios_iniciais()
     ponte = PonteMQTT(config.mqtt_host, config.mqtt_port, config.mqtt_prefixo, handlers.tratar_mensagem)
     ponte.iniciar()
@@ -104,22 +110,34 @@ def listar_dispositivos(usuario: dict = Depends(auth.usuario_logado)):
         dispositivos = db.linhas(
             conn,
             """
-            SELECT id, nome, online, modo, condicao, fw, ultimo_contato, ultimo_estado
+            SELECT id, nome, online, modo, condicao, fw, ultimo_contato, ultimo_estado, recursos
             FROM dispositivos ORDER BY id
             """,
         )
+        # Uma busca no indice (dispositivo, grandeza, medido_em DESC) por par, em vez de
+        # DISTINCT ON sobre a tabela inteira: a interface chama isto a cada 3 s e a tabela
+        # ganha ~70 mil linhas por dia por estacao.
         ultimas = db.linhas(
             conn,
             """
-            SELECT DISTINCT ON (dispositivo_id, grandeza) dispositivo_id, grandeza, valor, unidade, medido_em
-            FROM leituras ORDER BY dispositivo_id, grandeza, medido_em DESC
+            SELECT d.id AS dispositivo_id, g.grandeza, l.valor, l.unidade, l.medido_em
+            FROM dispositivos d
+            CROSS JOIN unnest(CAST(:grandezas AS text[])) AS g(grandeza)
+            JOIN LATERAL (
+                SELECT valor, unidade, medido_em FROM leituras
+                WHERE dispositivo_id = d.id AND grandeza = g.grandeza
+                ORDER BY medido_em DESC LIMIT 1
+            ) l ON true
             """,
+            grandezas=list(contrato.GRANDEZAS),
         )
     por_dispositivo: dict[str, dict] = {}
     for l in ultimas:
         por_dispositivo.setdefault(l.pop("dispositivo_id"), {})[l.pop("grandeza")] = l
     for d in dispositivos:
         d["leituras"] = por_dispositivo.get(d["id"], {})
+        d["recursos_declarados"] = contrato.validar_recursos(d["recursos"]) is not None
+        d["recursos"] = contrato.recursos_efetivos(d["recursos"])
     return _json(dispositivos)
 
 
@@ -169,6 +187,7 @@ def painel(
     bloco_s = horas * 60
     with db.transacao() as conn:
         _checar_dispositivo(conn, dispositivo_id)
+        recursos = db.linha(conn, "SELECT recursos FROM dispositivos WHERE id = :d", d=dispositivo_id)["recursos"]
         blocos = db.linhas(
             conn,
             """
@@ -204,6 +223,17 @@ def painel(
             """,
             d=dispositivo_id, h=horas,
         )
+        # Cada vez que a bomba LIGOU de fato (evento gerado pelo estado do firmware),
+        # inclusive pela irrigacao local da placa, que nao passa pela tabela de comandos.
+        acionamentos = db.linha(
+            conn,
+            """
+            SELECT count(*) AS n FROM eventos
+            WHERE dispositivo_id = :d AND tipo = 'bomba' AND detalhe LIKE 'on%'
+              AND criado_em >= now() - make_interval(hours => :h)
+            """,
+            d=dispositivo_id, h=horas,
+        )["n"]
         alertas_periodo = db.linhas(
             conn,
             """
@@ -231,11 +261,13 @@ def painel(
         }
     return _json({
         "dispositivo_id": dispositivo_id,
+        "recursos": contrato.recursos_efetivos(recursos),
         "horas": horas,
         "bloco_s": bloco_s,
         "grandezas": grandezas,
         "irrigacoes": len(irrigacoes),
         "irrigacoes_lista": irrigacoes,
+        "acionamentos_bomba": acionamentos,
         "alertas": len(alertas_periodo),
         "alertas_lista": alertas_periodo,
     })

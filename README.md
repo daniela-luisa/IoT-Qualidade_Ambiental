@@ -33,11 +33,110 @@ Construir um dispositivo com ESP32 que:
 - receba comando remoto;
 - acione um alerta físico (LED e buzzer) e confirme a ação executada.
 
+## Como funciona hoje (N3)
+
+O hardware mede, a rede transporta, o backend valida, decide e guarda, a interface informa e o usuário comanda — e todo comando volta com confirmação do dispositivo.
+
+```
+ESP32 (estacao-01/02) ──MQTT──> Mosquitto ──> Backend FastAPI ──> PostgreSQL
+      ^  telemetria, estado,                    │  valida contrato v1, grava,
+      │  confirmação, LWT                       │  regra de irrigação, alertas, e-mail
+      └────────── comando (commandId) <─────────┘<── Interface web (login, comando, painel)
+```
+
+### O que cada parte faz
+
+| Parte | Responsabilidade |
+|---|---|
+| **Firmware** (`firmware/…/grupo5_estacao_ambiental.ino`) | Lê DHT11 (temperatura/umidade do ar), solo e LDR (ADC, em %), classifica a condição, publica telemetria a cada 5 s e estado a cada 30 s (e sempre que algo muda). Executa comandos com intertravamento, guarda a configuração na NVS, tem LWT, NTP e OTA. |
+| **Backend** (`backend/app`) | Assina os tópicos, valida cada mensagem contra o [contrato v1](CONTRATOS.md), grava leituras e eventos, acompanha o ciclo de cada comando, roda a regra de irrigação remota, abre/resolve alertas e envia e-mail. |
+| **Banco** (`db/schema.sql`) | Dispositivos, leituras, comandos (ciclo completo), regras, alertas, eventos, notificações e usuários (só hash bcrypt). |
+| **Web** (`web/`) | Login (admin comanda, operador só vê), cartões online/offline com os sensores e atuadores **que cada estação tem** e suas últimas leituras, alertas, envio de comando (ligar/desligar), tabela de comandos com estado, painel analítico com média móvel, edição da regra e histórico de eventos. |
+
+### Comunicação (contrato MQTT v1)
+
+Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e exemplos em [`CONTRATOS.md`](CONTRATOS.md).
+
+| Tópico | Quem publica | Quando |
+|---|---|---|
+| `telemetria/{grandeza}` | dispositivo | a cada 5 s (valor inválido vai `null` → backend registra `falha_sensor`, no máximo 1 por minuto por grandeza) |
+| `estado` (retain) | dispositivo | a cada 30 s e em toda mudança (modo, condição, atuador) |
+| `status` (retain, LWT) | dispositivo / broker | `online` ao conectar; `offline` publicado pelo broker se a placa cair |
+| `comando` | backend | quando um admin envia ou a regra decide |
+| `confirmacao` | dispositivo | `recebido` (ok ou `rejeitado` + motivo) → `executado` |
+
+**Ciclo do comando:** `enviado` → `recebido` → `executado` → `confirmado` (o backend promove para confirmado ao ver o `estado` publicado logo depois). Finais alternativos: `rejeitado` (com motivo do catálogo), `falhou` (broker fora) e `expirado` (sem resposta em `COMANDO_TIMEOUT_S`).
+
+### Efeitos físicos (atuadores)
+
+| Atuador | Efeito | Duração | Quem aciona |
+|---|---|---|---|
+| **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 5), desliga sozinha; nunca acima de `duracaoMaxS` | Admin, regra remota do backend ou regra local da placa |
+| **LED** (GPIO 26) | Alerta visual | 1 a 60 s (padrão 8) | Admin; **pisca sozinho** se a placa ficar sem broker com condição `inadequado` ou em modo seguro |
+| **Buzzer** (GPIO 25, `tone` 1 kHz) | Alerta sonoro | 1 a 60 s (padrão 8) | Admin |
+
+### Estação sem bomba
+
+Cada placa declara no `estado` o que tem montado (`"recursos": {"sensores": [...], "atuadores": [...]}`), definido no firmware por `TEM_BOMBA` (1 = com relé/bomba, 0 = sem). A partir disso:
+
+- **Interface:** o cartão mostra só os sensores e atuadores daquela estação (com o selo "sem bomba"), o formulário de comando só oferece os atuadores que ela tem e o painel só mostra os gráficos dos sensores dela.
+- **Backend:** recusa comando para atuador que a estação não tem (`422 alvo_invalido`, nem publica) e o firmware também rejeita, se chegar.
+- **Solo seco sem bomba:** como não dá para irrigar, a regra **acende o LED** (fica aceso até o próximo aviso, máx. 60 s) e **toca o buzzer** (bipe com a duração da regra), abre o alerta "sem bomba: regar manualmente" e manda e-mail. Repete a cada intervalo mínimo enquanto o solo seguir seco e **apaga LED e buzzer** quando alguém rega e a umidade volta ao limiar.
+- Firmware antigo, sem o campo `recursos`, é tratado como "tem tudo".
+
+Toda vez que a bomba liga ou desliga de fato (inclusive pela regra local da placa, que não passa por comando), o backend registra um evento `bomba` e o painel conta em "Bomba ligou".
+
+### Classificação e modos do dispositivo
+
+- **Condição:** `inadequado` se solo abaixo de `limiarSoloSecoPct`, solo sem leitura ou temperatura fora de 10–32 °C; `atencao` se luz abaixo de 20 %; senão `adequado`.
+- **Modos:** `automatico` (normal); `manual` por 60 s depois de qualquer comando de pessoa (a irrigação automática — local e remota — pausa); `seguro` no boot e após 3 falhas seguidas de sensor (bomba desligada e só aceita comandos de desligar/config).
+- **Segurança da bomba:** só liga com leitura válida do solo; intervalo mínimo (`intervaloMinS`) entre irrigações; teto de duração; desligada durante OTA; relé em estado desligado desde o boot.
+
+### Regra de irrigação remota (backend)
+
+A cada `REGRAS_INTERVALO_S` o backend calcula a média da umidade do solo na janela configurada. Dispara `bomba on` (origem `regra`) — ou LED + buzzer na [estação sem bomba](#estação-sem-bomba) — quando **a média e a leitura mais recente** estão abaixo do limiar, a estação está online, fora dos modos `seguro`/`manual`, a bomba não está ligada e já passou o intervalo mínimo desde a última **tentativa** (comando rejeitado também conta — sem reenvio em loop). Abre o alerta `solo_seco` (e manda um e-mail) e o resolve quando a média volta ao limiar.
+
+## Como rodar
+
+```bash
+cp .env.example .env              # troque as senhas e o JWT_SECRET (32+ caracteres; vazio o backend não sobe)
+docker compose up -d --build      # Mosquitto :1883, PostgreSQL :5432, backend + web :8000
+open http://localhost:8000        # login com ADMIN_EMAIL / ADMIN_PASSWORD do .env
+```
+
+**Sem placa (simulador):**
+
+```bash
+pip install paho-mqtt
+python tests/simulador_dispositivo.py --device estacao-01 --seco               # solo seco: a regra irriga sozinha
+python tests/simulador_dispositivo.py --device estacao-02 --seco --sem-bomba   # sem bomba: a regra aciona LED + buzzer
+ADMIN_EMAIL=... ADMIN_PASSWORD=... python tests/e2e_smoke.py estacao-01
+```
+
+**Placa física:** crie `firmware/grupo5_estacao_ambiental/secrets.h` (fora do git):
+
+```cpp
+#define WIFI_SSID "sua_rede"
+#define WIFI_PASSWORD "sua_senha"
+#define MQTT_HOST "192.168.0.10"   // IP do notebook com o docker compose (macOS: ipconfig getifaddr en0)
+#define OTA_PASSWORD "opcional"
+```
+
+Ajuste `DEVICE_ID` (`estacao-01` / `estacao-02`) e `TEM_BOMBA` (0 na placa que não tem relé/bomba) e grave. **Wokwi:** `MODO_SIMULADOR 1` (usa `Wokwi-GUEST` e `host.wokwi.internal`; precisa do Private IoT Gateway).
+
+**Testes** (precisa de um PostgreSQL de teste; o CI faz isso sozinho):
+
+```bash
+pip install -r backend/requirements-dev.txt
+TEST_DATABASE_URL=postgresql+psycopg://macp:senha@localhost:5432/macp_test pytest tests
+```
+
 ## Sensor e atuador reais
 
 - **Sensor de temperatura e umidade do ar**: DHT11 
-- **Sensor de umidade do solo**: módulo capacitivo com placa comparadora, saída digital
-- **Sensor de luminosidade**: módulo LDR com placa comparadora, saída digital
+- **Sensor de umidade do solo**: módulo capacitivo, saída analógica (AO no GPIO 35, ADC1) convertida em % pela calibração `SOLO_ADC_SECO`/`SOLO_ADC_MOLHADO` do firmware (na N1 era a saída digital do comparador)
+- **Sensor de luminosidade**: módulo LDR, saída analógica (AO no GPIO 34, ADC1) em %
+- **Atuador de irrigação**: mini bomba 5 V com fonte própria, via módulo relé no GPIO 27 (ativo em nível baixo)
 - **Atuador/alerta**: LED (com resistor em série) + Buzzer passivo
 
 ## Hardware detalhado
@@ -46,18 +145,13 @@ Construir um dispositivo com ESP32 que:
 - **Protoboard**: protoboard padrão de 830 pontos.
 - **Estrutura/caixa**: suporte simples (impresso em 3D ou montado em caixa de papelão/acrílico) para fixar o ESP32 e os sensores próximo ao vaso da planta.
 - **Conectores**: jumpers macho-macho e macho-fêmea; resistor em série com o LED (conforme orientação de segurança do guia da disciplina).
-- **Leitura do solo e da luminosidade**: os módulos físicos reais têm um comparador embutido, com um potenciômetro de sensibilidade ajustável no próprio módulo — ele já entrega a leitura pronta como HIGH/LOW (`digitalRead`), em vez de um valor bruto contínuo. Por isso a calibração de sensibilidade acontece fisicamente no módulo (girando o potenciômetro dele), não mais por limiares no código.
-- **Pinagem**: solo no GPIO35 e luminosidade no GPIO34 — hoje esses pinos são usados apenas por serem entradas digitais válidas do ESP32; a leitura não passa mais pelo ADC (isso só era relevante quando a leitura era analógica, na versão anterior do firmware).
+- **Leitura do solo e da luminosidade**: na N3 os dois módulos são lidos pela saída analógica (AO) no ADC1, com média de 8 amostras, e convertidos em %. A calibração do solo fica no firmware (`SOLO_ADC_SECO` no ar, `SOLO_ADC_MOLHADO` na água); leitura bruta abaixo de `SOLO_ADC_MIN_VALIDO` é tratada como fio solto/sensor sem alimentação e bloqueia a bomba. (Na N1 era a saída digital do comparador, ajustada no potenciômetro do módulo.)
+- **Pinagem**: solo no GPIO35 e luminosidade no GPIO34 (ADC1, só entrada, funcionam com Wi-Fi ligado); relé da bomba no GPIO27 — mapa completo em [`docs/mapa_de_pinos.md`](docs/mapa_de_pinos.md).
 - **Buzzer**: é passivo, então é acionado com `tone()`/`noTone()` (gerando uma frequência de 1000Hz), não com `digitalWrite()` — esse tipo de buzzer não emite som só com uma tensão fixa.
 
 ## Segurança / credenciais
 
-As credenciais de Wi-Fi (`WIFI_SSID`, `WIFI_PASSWORD`) ficam em um arquivo `secrets.h`, que **não é versionado** (está listado no `.gitignore`). O firmware principal só faz `#include "secrets.h"`. Quem for rodar o projeto localmente precisa criar esse arquivo manualmente, no mesmo formato:
-
-```cpp
-#define WIFI_SSID "sua_rede"
-#define WIFI_PASSWORD "sua_senha"
-```
+As credenciais de Wi-Fi (`WIFI_SSID`, `WIFI_PASSWORD`), o IP do broker (`MQTT_HOST`) e a senha de OTA ficam em um arquivo `secrets.h` (formato completo em [Como rodar](#como-rodar)), que **não é versionado** (está listado no `.gitignore`). O firmware principal só faz `#include "secrets.h"`; quem for gravar a placa cria esse arquivo manualmente.
 
 ## Protótipo do produto
 
@@ -68,6 +162,8 @@ Protótipo montado com o ESP32 conectado aos sensores e atuadores via protoboard
 **Status de validação:** o firmware foi validado em simulação (Wokwi, via Wokwi para VS Code com compilação local em PlatformIO) e também testado no protótipo físico montado em sala, já com os módulos reais de solo e luminosidade (saída digital) e o DHT11. A validação completa de ponta a ponta no físico — sensores + backend automático rodando juntos — ainda está em andamento.
 
 ## Arquitetura específica
+
+> **Histórico da N1.** Esta seção e a seguinte descrevem a primeira versão (tópicos em texto puro, broker público, `decisor.py`). O sistema atual está em [Como funciona hoje (N3)](#como-funciona-hoje-n3).
 
 ![Arquitetura do projeto](docs/arquitetura.png)
 
@@ -152,7 +248,7 @@ python backend/decisor.py
 - [`CP12_EQUIPE-5_PARCIAL.pdf`](docs/CP12_EQUIPE-5_PARCIAL.pdf) — proposta de upgrade do CP12 (seções 1 a 4), entrega de 20/10/2026 (mesmo PDF entregue no Teams).
 - As seções 5 a 9 (hardware calculado, fluxograma do firmware, contrato v1, tecnologias, cronograma e divisão) fazem parte da entrega completa do CP12 de 27/10/2026.
 
-> Instruções completas de instalação e execução (README do R11) serão adicionadas até a defesa da N3 (24/11/2026).
+> Instruções de instalação e execução (R11): veja [Como rodar](#como-rodar).
 
 - [`docs/Esquema_Eletrico_Por_No.jpeg`](docs/Esquema_Eletrico_Por_No.jpeg), [`docs/Fluxograma_Firmware.jpeg`](docs/Fluxograma_Firmware.jpeg), [`docs/mapa_de_pinos.md`](docs/mapa_de_pinos.md) e [`CONTRATOS.md`](CONTRATOS.md) (contrato MQTT v1): entregues no CP12 completo (27/10).
 

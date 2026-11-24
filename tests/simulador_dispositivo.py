@@ -25,7 +25,8 @@ class Estacao:
         self.fw = args.fw
         self.seco = args.seco
         self.falhar_sensor = args.falha_sensor
-        self.atuadores = {"bomba": "off", "led": "off", "buzzer": "off"}
+        self.tem_bomba = not args.sem_bomba
+        self.atuadores = {"bomba": "off", "led": "off", "buzzer": "off"} if self.tem_bomba else {"led": "off", "buzzer": "off"}
         self.config = {"limiarSoloSecoPct": 30, "intervaloMinS": args.intervalo_min_bomba, "duracaoMaxS": 15}
         self.ultima_irrigacao = 0.0
         self.vistos: set[str] = set()
@@ -55,12 +56,14 @@ class Estacao:
         return "adequado"
 
     def publicar_estado(self):
+        recursos = {"sensores": ["temperatura", "umidade_ar", "umidade_solo", "luminosidade"],
+                    "atuadores": list(self.atuadores)}
         self.pub("estado", {"ts": agora_iso(), "modo": self.modo, "condicao": self.condicao(),
-                            **self.atuadores, "fw": self.fw}, qos=1, retain=True)
+                            **self.atuadores, "fw": self.fw, "recursos": recursos}, qos=1, retain=True)
 
     def publicar_telemetria(self):
         alvo_solo = 20.0 if self.seco else 55.0
-        if self.atuadores["bomba"] == "on":
+        if self.atuadores.get("bomba") == "on":
             alvo_solo = 80.0
         self.solo += (alvo_solo - self.solo) * 0.3 + random.uniform(-1, 1)
         self.temp += random.uniform(-0.3, 0.3)
@@ -113,7 +116,7 @@ class Estacao:
                 if nome in cmd and not (lo <= cmd[nome] <= hi):
                     return "valor_fora_da_faixa"
             return None
-        if alvo not in ALVOS:
+        if alvo not in ALVOS or alvo not in self.atuadores:
             return "alvo_invalido"
         if acao == "off":
             return None
@@ -186,6 +189,7 @@ def main():
     p.add_argument("--modo", default="automatico", choices=["automatico", "manual", "seguro"])
     p.add_argument("--fw", default="1.0.0")
     p.add_argument("--seco", action="store_true", help="mantem o solo perto de 20%%")
+    p.add_argument("--sem-bomba", action="store_true", help="estacao sem rele/bomba (so LED e buzzer)")
     p.add_argument("--falha-sensor", action="store_true", help="temperatura sai com valor nulo")
     Estacao(p.parse_args()).rodar()
 

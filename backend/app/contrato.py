@@ -114,7 +114,30 @@ def validar_estado(dados: dict) -> dict:
         "modo": modo if modo in MODOS else None,
         "condicao": condicao if condicao in CONDICOES else None,
         "fw": fw if isinstance(fw, str) and fw else None,
+        "recursos": validar_recursos(dados.get("recursos")),
     }
+
+
+def validar_recursos(valor) -> dict | None:
+    """Campo "recursos" do estado. Nomes desconhecidos sao descartados; formato
+    invalido devolve None (o backend mantem o que ja sabia)."""
+    if not isinstance(valor, dict):
+        return None
+    sensores, atuadores = valor.get("sensores"), valor.get("atuadores")
+    if not isinstance(sensores, list) or not isinstance(atuadores, list):
+        return None
+    return {
+        "sensores": [g for g in GRANDEZAS if g in sensores],
+        "atuadores": [a for a in ATUADORES if a in atuadores],
+    }
+
+
+def recursos_efetivos(valor) -> dict:
+    """Recursos guardados no banco, ou todos se a estacao nunca declarou."""
+    declarados = validar_recursos(valor)
+    if declarados is None:
+        return {"sensores": list(GRANDEZAS), "atuadores": list(ATUADORES)}
+    return declarados
 
 
 def validar_status(dados: dict) -> str:
@@ -169,9 +192,10 @@ def validar_comando(alvo, acao, duracao, parametros) -> dict:
                 raise ErroContrato("valor_fora_da_faixa", f"parametro desconhecido {nome}")
             numero = _numero(valor)
             minimo, maximo = PARAMETROS_CONFIG[nome]
-            if numero is None or not (minimo <= numero <= maximo):
-                raise ErroContrato("valor_fora_da_faixa", f"{nome}={valor!r} fora de {minimo} a {maximo}")
-            normalizados[nome] = int(numero) if float(numero).is_integer() else numero
+            # o firmware so aceita inteiro (ArduinoJson is<int>): 30.5 seria rejeitado la na placa
+            if numero is None or not numero.is_integer() or not (minimo <= numero <= maximo):
+                raise ErroContrato("valor_fora_da_faixa", f"{nome}={valor!r} deve ser inteiro de {minimo} a {maximo}")
+            normalizados[nome] = int(numero)
         return {"alvo": alvo, "acao": "set", "duracaoS": None, "parametros": normalizados}
 
     if acao is None:
