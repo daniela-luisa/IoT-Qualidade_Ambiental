@@ -9,6 +9,9 @@ CREATE TABLE dispositivos (
     condicao        text CHECK (condicao IN ('adequado', 'atencao', 'inadequado')),
     fw              text,
     ultimo_estado   jsonb,
+    -- o que a estacao declarou ter no estado: {"sensores": [...], "atuadores": [...]}.
+    -- Nulo = ainda nao declarou (firmware antigo): o backend assume todos.
+    recursos        jsonb,
     ultimo_contato  timestamptz,
     criado_em       timestamptz NOT NULL DEFAULT now()
 );

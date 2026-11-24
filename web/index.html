@@ -43,10 +43,16 @@
         <form id="form-comando" class="linha">
           <label>Estação <select id="cmd-disp"></select></label>
           <label>Alvo
-            <select id="cmd-alvo">
+            <select id="cmd-alvo"><!-- refeito pelo app.js com os atuadores que a estacao tem -->
               <option value="bomba">Bomba (1 a 15 s)</option>
               <option value="led">LED (1 a 60 s)</option>
               <option value="buzzer">Buzzer (1 a 60 s)</option>
+            </select>
+          </label>
+          <label>Ação
+            <select id="cmd-acao">
+              <option value="on">Ligar</option>
+              <option value="off">Desligar</option>
             </select>
           </label>
           <label>Duração (s) <input id="cmd-dur" type="number" min="1" max="15" value="5" required></label>
@@ -86,13 +92,13 @@
     <section class="duas">
       <div class="card">
         <h2>Regra de irrigação automática</h2>
-        <p class="mudo">Se a umidade do solo ficar abaixo do limiar durante a janela, o backend envia um comando de bomba.</p>
+        <p id="rg-desc" class="mudo">Se a umidade do solo ficar abaixo do limiar durante a janela, o backend envia um comando de bomba.</p>
         <form id="form-regra" class="grade-form">
           <label>Estação <select id="rg-disp"></select></label>
           <label>Limiar do solo (%) <input id="rg-limiar" type="number" min="10" max="80" step="1" required></label>
           <label>Janela (min) <input id="rg-janela" type="number" min="1" max="120" required></label>
           <label>Intervalo mínimo (s) <input id="rg-intervalo" type="number" min="30" max="3600" required></label>
-          <label>Duração da bomba (s) <input id="rg-dur" type="number" min="1" max="15" required></label>
+          <label><span id="rg-dur-rotulo">Duração da bomba (s)</span> <input id="rg-dur" type="number" min="1" max="15" required></label>
           <label class="check"><input id="rg-ativa" type="checkbox"> Regra ativa</label>
           <button type="submit" id="rg-salvar">Salvar regra</button>
         </form>

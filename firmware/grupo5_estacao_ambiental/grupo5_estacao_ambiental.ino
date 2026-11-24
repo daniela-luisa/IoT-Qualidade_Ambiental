@@ -22,16 +22,20 @@
 #define MODO_SIMULADOR 0
 
 #define DEVICE_ID   "estacao-01"      // a segunda placa usa "estacao-02"
-#define FW_VERSION  "1.3.1"
+#define FW_VERSION  "1.4.0"
+// 1 = esta placa tem rele + bomba. 0 = estacao SEM bomba: rejeita comando de bomba (alvo_invalido),
+// nao irriga sozinha e avisa o backend pelo campo "recursos" do estado. Com o solo seco, o backend
+// passa a acionar LED + buzzer nela para alguem regar na mao.
+#define TEM_BOMBA   1
 
 // Igual ao MQTT_PREFIX do .env do backend (padrao "grupo5"). Com prefixo diferente o backend nao ve nada.
 #define MQTT_PREFIX "grupo5"
 #define MQTT_PORT   1883
 
 #if MODO_SIMULADOR
-  #define WIFI_SSID         "TDESI"
-  #define WIFI_PASSWORD     "leo12345"
-  #define MQTT_HOST         "10.252.1.58"
+  #define WIFI_SSID         "Wokwi-GUEST"          // unica rede que o ESP32 simulado enxerga
+  #define WIFI_PASSWORD     ""
+  #define MQTT_HOST         "host.wokwi.internal"  // = o notebook (Mosquitto do docker compose)
   #define DHT_TIPO          DHT22     // Wokwi so tem DHT22
   #define RELE_ATIVO_BAIXO  0         // rele do Wokwi liga em ALTO (diagram.json: bomba no contato NO)
   #define MQTT_KEEPALIVE_S  60        // Wokwi roda mais devagar que o tempo real
@@ -135,6 +139,7 @@ class Estacao {
   Cfg cfg;
   Modo modo = SEGURO;  // boot em seguro; a primeira leitura valida do DHT passa para automatico
   bool bomba = false, led = false, buzzer = false;
+  bool temBomba = true;    // false = estacao sem rele/bomba (TEM_BOMBA 0)
   bool exigirSolo = true;  // bomba so liga com o sensor de solo lendo
   bool soloOk = false;     // ultima leitura do solo foi valida
 
@@ -176,7 +181,7 @@ class Estacao {
   // com solo valido abaixo do limiar e fora do intervalo minimo desde a ultima irrigacao.
   // Liga por BOMBA_DUR_PADRAO s (limitado por duracaoMaxS); o tick() desliga sozinho.
   bool irrigarSeSeco(float soloPct, uint32_t agora) {
-    if (modo != AUTOMATICO || bomba) return false;
+    if (!temBomba || modo != AUTOMATICO || bomba) return false;
     if (exigirSolo && !soloOk) return false;
     if (isnan(soloPct) || soloPct >= (float)cfg.limiarSoloSecoPct) return false;
     if (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)) return false;
@@ -206,6 +211,7 @@ class Estacao {
     bool ehAtuador = strcmp(alvo, "bomba") == 0 || strcmp(alvo, "led") == 0 || strcmp(alvo, "buzzer") == 0;
 
     if (!ehConfig && !ehAtuador) return rejeitar(r, "alvo_invalido");
+    if (!temBomba && strcmp(alvo, "bomba") == 0) return rejeitar(r, "alvo_invalido");  // atuador que esta placa nao tem
     // modo seguro: aceita config e DESLIGAR atuador (os dois sao sempre seguros); ligar e rejeitado
     if (modo == SEGURO && ehAtuador && strcmp(acao, "off") != 0) return rejeitar(r, "modo_seguro");
     // sem leitura valida do solo a bomba nao liga (motivo do contrato: modo_seguro)
@@ -332,8 +338,16 @@ inline size_t jsonEstado(char* buf, size_t n, const char* dev, const char* ts, c
   d["v"] = 1; d["deviceId"] = dev;
   if (ts[0]) d["ts"] = ts; else d["ts"] = nullptr;
   d["modo"] = nomeModo(e.modo); d["condicao"] = cond;
-  d["bomba"] = e.bomba ? "on" : "off"; d["led"] = e.led ? "on" : "off"; d["buzzer"] = e.buzzer ? "on" : "off";
+  if (e.temBomba) d["bomba"] = e.bomba ? "on" : "off";  // sem bomba: o campo nao vai
+  d["led"] = e.led ? "on" : "off"; d["buzzer"] = e.buzzer ? "on" : "off";
   d["fw"] = fw;
+  // o que esta placa tem: o backend e a interface se ajustam a isto
+  JsonObject rec = d["recursos"].to<JsonObject>();
+  JsonArray sens = rec["sensores"].to<JsonArray>();
+  sens.add("temperatura"); sens.add("umidade_ar"); sens.add("umidade_solo"); sens.add("luminosidade");
+  JsonArray atu = rec["atuadores"].to<JsonArray>();
+  if (e.temBomba) atu.add("bomba");
+  atu.add("led"); atu.add("buzzer");
   d["limiarSoloSecoPct"] = e.cfg.limiarSoloSecoPct; d["intervaloMinS"] = e.cfg.intervaloMinS; d["duracaoMaxS"] = e.cfg.duracaoMaxS;
   return serializeJson(d, buf, n);
 }
@@ -398,7 +412,7 @@ void pub(const char* topico, const char* payload, bool retain) {
 }
 
 void publicarEstado() {
-  char ts[32], buf[400];
+  char ts[32], buf[512];
   agoraTs(ts, sizeof ts);
   g5::jsonEstado(buf, sizeof buf, DEVICE_ID, ts, est, condAtual, FW_VERSION);
   pub(T_ESTADO, buf, true);
@@ -528,7 +542,7 @@ void lerEPublicar() {
   publicarTelemetria("umidade_ar", u, "%");
   publicarTelemetria("umidade_solo", solo, "%");
   publicarTelemetria("luminosidade", luz, "%");
-  if (!soloValido && est.exigirSolo) Serial.println("[solo] sem leitura valida: bomba bloqueada (confira o fio AO no GPIO 35)");
+  if (!soloValido && est.exigirSolo && est.temBomba) Serial.println("[solo] sem leitura valida: bomba bloqueada (confira o fio AO no GPIO 35)");
   bool irrigou = false;
 #if IRRIGACAO_LOCAL
   irrigou = est.irrigarSeSeco(solo, millis());
@@ -571,6 +585,7 @@ void setup() {
   analogReadResolution(12);
   dht.begin();
   est.exigirSolo = EXIGIR_SOLO_VALIDO;
+  est.temBomba = TEM_BOMBA;
 
   prefs.begin("g5", false);
   est.cfg.limiarSoloSecoPct = prefs.getInt("limiar", est.cfg.limiarSoloSecoPct);
@@ -588,11 +603,12 @@ void setup() {
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(768);  // estado com "recursos" passa de 300 bytes
   mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
   mqtt.setSocketTimeout(3);
   mqtt.setCallback(aoReceber);
-  Serial.printf("Estacao %s fw %s | prefixo %s | broker %s:%d\n", DEVICE_ID, FW_VERSION, MQTT_PREFIX, MQTT_HOST, MQTT_PORT);
+  Serial.printf("Estacao %s fw %s | %s | prefixo %s | broker %s:%d\n", DEVICE_ID, FW_VERSION,
+                est.temBomba ? "com bomba" : "SEM bomba (alerta por LED/buzzer)", MQTT_PREFIX, MQTT_HOST, MQTT_PORT);
 }
 
 void loop() {
@@ -617,6 +633,9 @@ void loop() {
     if (ntpIniciado) ArduinoOTA.handle();
   #endif
 
+  // tempo da bomba ANTES de tentarMqtt: com o broker fora, mqtt.connect() trava ~3 s e a bomba
+  // passaria desse tempo do limite de duracao
+  if (est.tick(agora)) { aplicarSaidas(); publicarEstado(); }
   tentarMqtt(agora);
   if (mqtt.connected()) mqtt.loop();
   agora = millis();  // o mqtt.loop() pode ter aceitado um comando: nao usar a hora lida antes dele

@@ -73,11 +73,34 @@ def _tratar(topico: str, payload: bytes) -> None:
         except contrato.ErroContrato as erro:
             tipo_evento = "falha_sensor" if erro.codigo == "falha_sensor" else "mensagem_invalida"
             detalhe = erro.detalhe if erro.codigo == "falha_sensor" else f"{erro.codigo} em {topico}: {erro.detalhe}"
+            if tipo_evento == "falha_sensor" and _falha_recente(conn, device_id, grandeza):
+                log.debug("falha_sensor repetida %s (ja registrada no ultimo minuto)", topico)
+                return
             db.registrar_evento(conn, device_id, tipo_evento, detalhe)
             log.warning("%s %s: %s", tipo_evento, topico, erro)
 
     for args in pendentes:
         notify.agendar(*args)
+
+
+# Sensor quebrado manda null a cada 5 s: sem isto seriam ~720 eventos por hora por grandeza,
+# e a lista de eventos da interface so mostraria isso. Um registro por minuto ja e evidencia.
+FALHA_SENSOR_JANELA_S = 60
+
+
+def _falha_recente(conn: Connection, device_id: str, grandeza: str | None) -> bool:
+    return conn.execute(
+        text(
+            """
+            SELECT 1 FROM eventos
+            WHERE dispositivo_id = :d AND tipo = 'falha_sensor'
+              AND detalhe LIKE :g
+              AND criado_em >= now() - make_interval(secs => :s)
+            LIMIT 1
+            """
+        ),
+        {"d": device_id, "g": f"{grandeza or ''} %", "s": FALHA_SENSOR_JANELA_S},
+    ).first() is not None
 
 
 def _tocar(conn: Connection, device_id: str) -> None:
@@ -101,7 +124,11 @@ def _telemetria(conn: Connection, device_id: str, grandeza: str, dados: dict, ch
 
 def _estado(conn: Connection, device_id: str, dados: dict) -> None:
     campos = contrato.validar_estado(dados)
-    anterior = db.linha(conn, "SELECT fw FROM dispositivos WHERE id = :d FOR UPDATE", d=device_id)
+    anterior = db.linha(
+        conn,
+        "SELECT fw, ultimo_estado ->> 'bomba' AS bomba, recursos FROM dispositivos WHERE id = :d FOR UPDATE",
+        d=device_id,
+    )
     conn.execute(
         text(
             """
@@ -109,15 +136,25 @@ def _estado(conn: Connection, device_id: str, dados: dict) -> None:
             SET modo = COALESCE(:modo, modo),
                 condicao = COALESCE(:condicao, condicao),
                 fw = COALESCE(:fw, fw),
+                recursos = COALESCE(CAST(:recursos AS jsonb), recursos),
                 ultimo_estado = CAST(:estado AS jsonb),
                 ultimo_contato = now()
             WHERE id = :d
             """
         ),
-        {**campos, "estado": json.dumps(dados, ensure_ascii=False), "d": device_id},
+        {**campos, "recursos": json.dumps(campos["recursos"]) if campos["recursos"] else None,
+         "estado": json.dumps(dados, ensure_ascii=False), "d": device_id},
     )
     if campos["fw"] and anterior["fw"] and campos["fw"] != anterior["fw"]:
         db.registrar_evento(conn, device_id, "firmware_atualizado", f"{anterior['fw']} -> {campos['fw']}")
+    if campos["recursos"] and campos["recursos"] != anterior["recursos"]:
+        atuadores = ", ".join(campos["recursos"]["atuadores"]) or "nenhum"
+        db.registrar_evento(conn, device_id, "recursos", f"atuadores: {atuadores}")
+    # Efeito fisico da bomba, venha de onde vier (comando do backend OU irrigacao local da placa):
+    # o firmware publica estado ao ligar e ao desligar, entao cada borda vira um evento.
+    bomba = dados.get("bomba")
+    if bomba in ("on", "off") and bomba != (anterior["bomba"] or "off"):
+        db.registrar_evento(conn, device_id, "bomba", f"{bomba} (modo {campos['modo'] or '-'})")
     promovidos = comandos.promover_executados(conn, device_id)
     if promovidos:
         log.info("%s: %d comando(s) confirmado(s) pelo estado", device_id, promovidos)

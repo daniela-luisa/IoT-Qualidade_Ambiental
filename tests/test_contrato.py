@@ -72,7 +72,7 @@ def test_ts_sem_fuso_invalido_ou_sem_ntp_usa_chegada(ts):
 
 def test_estado_ignora_modo_fora_do_vocabulario():
     campos = contrato.validar_estado({"modo": "MANUAL", "condicao": "atencao", "fw": "1.0.0"})
-    assert campos == {"modo": None, "condicao": "atencao", "fw": "1.0.0"}
+    assert campos == {"modo": None, "condicao": "atencao", "fw": "1.0.0", "recursos": None}
 
 
 def test_status_online_offline():
@@ -155,7 +155,8 @@ def test_config_valido_vai_no_nivel_de_cima_do_payload():
 
 @pytest.mark.parametrize(
     "parametros",
-    [{"limiarSoloSecoPct": 9}, {"intervaloMinS": 3601}, {"duracaoMaxS": 16}, {"outro": 1}, {}, None],
+    [{"limiarSoloSecoPct": 9}, {"intervaloMinS": 3601}, {"duracaoMaxS": 16}, {"outro": 1}, {}, None,
+     {"limiarSoloSecoPct": 30.5}, {"intervaloMinS": "60"}, {"duracaoMaxS": True}],
 )
 def test_config_invalido(parametros):
     with pytest.raises(ErroContrato) as e:
@@ -165,3 +166,10 @@ def test_config_invalido(parametros):
 
 def test_formato_do_command_id():
     assert contrato.formatar_command_id(CHEGADA, 7) == "c-20261124-0007"
+
+
+def test_config_inteiro_vindo_como_float_vira_int():
+    # o firmware usa is<int>(): 35.0 precisa sair como 35 no JSON
+    c = contrato.validar_comando("config", "set", None, {"limiarSoloSecoPct": 35.0})
+    assert c["parametros"] == {"limiarSoloSecoPct": 35}
+    assert isinstance(c["parametros"]["limiarSoloSecoPct"], int)

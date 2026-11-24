@@ -38,6 +38,19 @@ def esperar_banco(tentativas: int = 30, intervalo_s: float = 2.0) -> None:
     raise RuntimeError("banco nao respondeu na partida")
 
 
+# Alteracoes de schema depois da primeira subida: o schema.sql so roda com o volume do
+# Postgres vazio, entao um banco ja criado recebe as colunas novas aqui (idempotente).
+MIGRACOES = (
+    "ALTER TABLE dispositivos ADD COLUMN IF NOT EXISTS recursos jsonb",
+)
+
+
+def migrar() -> None:
+    with transacao() as conn:
+        for sql in MIGRACOES:
+            conn.execute(text(sql))
+
+
 def banco_ok() -> bool:
     try:
         with engine().connect() as conn:

@@ -195,6 +195,59 @@ def test_regra_inativa_nao_dispara(ponte):
     assert ponte.publicados == []
 
 
+def test_comando_rejeitado_tambem_respeita_intervalo(ponte):
+    """Firmware rejeitou (ex.: acabou de irrigar sozinho) → a regra NÃO reenvia a cada ciclo."""
+    ficar_online()
+    _telemetria_solo(10.0)
+    regras.avaliar_todas(ponte)
+    [c] = consulta("SELECT comando_id FROM comandos")
+    publicar(D, "confirmacao", {"v": 1, "commandId": c["comando_id"], "etapa": "recebido",
+                                "resultado": "rejeitado", "motivo": "intertravamento_intervalo"})
+    for _ in range(3):
+        regras.avaliar_todas(ponte)
+    assert _n_comandos() == 1
+    assert len(ponte.publicados) == 1
+
+
+def test_modo_manual_pausa_a_regra(ponte):
+    """Pessoa mandou comando há pouco (firmware em modo manual) → regra não passa por cima."""
+    ficar_online()
+    _set_modo(D, "manual")
+    _telemetria_solo(5.0)
+    regras.avaliar_todas(ponte)
+    assert _n_comandos() == 0
+
+
+def test_bomba_ja_ligada_nao_dispara(ponte):
+    """Estado do firmware diz bomba on (ex.: irrigação local) → regra aguarda."""
+    ficar_online()
+    publicar(D, "estado", {"v": 1, "modo": "automatico", "bomba": "on"})
+    _telemetria_solo(5.0)
+    regras.avaliar_todas(ponte)
+    assert _n_comandos() == 0
+
+
+def test_media_baixa_mas_ultima_leitura_recuperada_nao_dispara(ponte):
+    """Depois de irrigar, a média da janela ainda carrega as leituras secas: não encharcar."""
+    ficar_online()
+    for v in (5.0, 5.0, 5.0, 45.0):  # média 15 < 30, última 45 >= 30
+        _telemetria_solo(v)
+    regras.avaliar_todas(ponte)
+    assert _n_comandos() == 0
+
+
+def test_alerta_solo_seco_manda_um_email_so(ponte):
+    ficar_online()
+    _telemetria_solo(10.0)
+    regras.avaliar_todas(ponte)
+    with db.transacao() as conn:
+        conn.exec_driver_sql("UPDATE comandos SET enviado_em = now() - interval '90 seconds'")
+    regras.avaliar_todas(ponte)  # segundo disparo, alerta continua aberto
+    assert _n_comandos() == 2
+    [n] = consulta("SELECT motivo FROM notificacoes")
+    assert n["motivo"] == "solo_seco"
+
+
 # ── testes do decisor legado ────────────────────────────────────────────────
 
 
