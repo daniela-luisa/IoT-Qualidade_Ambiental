@@ -534,11 +534,10 @@ void releFisico(bool ligar) {
 
 bool padraoLed(uint32_t agora) {
   if (est.led) return true;
-  if (est.bombaAcionada(agora)) return true;
-  if (est.modo == g5::SEGURO) return (agora / 150) % 2;
-  if (alertaLocal) return true;
-  if (!mqtt.connected()) return (agora / 1000) % 2;
-  return (agora % 5000) < 80;
+  bool problema = est.modo == g5::SEGURO || !mqtt.connected();
+  if (alertaLocal && est.modo != g5::SEGURO) return true;
+  if (problema) return (agora / 500) % 2;
+  return false;
 }
 
 bool padraoBuzzer(uint32_t agora) {

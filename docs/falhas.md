@@ -47,7 +47,7 @@ SELECT tipo, detalhe, criado_em
 ### Comportamento esperado
 
 - **Placa (regra local, sem rede):** continua lendo os sensores e irrigando sozinha se o solo secar. O LED fica
-  **aceso fixo** se a condição for `inadequado`, ou **pisca devagar** (conectando) se não for. A serial mostra
+  **aceso** se a condição for `inadequado`, ou **piscando** (sem conexão) se não for. A serial mostra
   `[historico] sem broker: N leitura(s) ... guardados`.
 - **Backend:** em uns 20 s (keepalive de 15 s) o broker publica o Last Will `offline`; o dispositivo fica
   `online = false` e abre o alerta `dispositivo_offline`. O cartão no painel fica "offline".
@@ -144,7 +144,7 @@ SELECT count(*) FROM leituras WHERE grandeza = 'temperatura' AND valor > 50;   -
 
 - **Placa:** a serial mostra `solo=nan% (raw ... INVALIDO)` e `[solo] sem leitura valida: bomba bloqueada`.
   Depois de **3 leituras seguidas com falha** (~15 s) ela entra em **modo seguro**: bomba desligada, LED
-  **piscando rápido**, e `bomba on` é rejeitado com `modo_seguro`.
+  **piscando**, e `bomba on` é rejeitado com `modo_seguro`.
 - **Backend:** a telemetria chega com `valor: null` e vira evento `falha_sensor` (no máximo 1 por minuto por
   grandeza); nenhuma leitura inválida é gravada. O cartão mostra "Modo seguro".
 - **Volta:** ao religar o fio, a primeira leitura válida tira a placa do modo seguro (volta a `automatico`).

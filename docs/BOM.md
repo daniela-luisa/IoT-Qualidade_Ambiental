@@ -12,7 +12,7 @@ marcados com **(B)**. Ligações e pinos em [`mapa_de_pinos.md`](mapa_de_pinos.m
 | 2 | Módulo DHT11 | 1 | temperatura e umidade do ar | GPIO 14; pull-up de 10 kΩ se o sensor vier sem placa |
 | 3 | Sensor de umidade do solo capacitivo (saída AO) | 1 | umidade do solo | GPIO 35 (ADC1), alimentado em 3V3 |
 | 4 | Módulo LDR com saída AO | 1 | luminosidade | GPIO 34 (ADC1), alimentado em 3V3 |
-| 5 | LED 5 mm | 1 | alerta visual e luz de status | GPIO 26 |
+| 5 | LED 5 mm | 1 | alerta visual (apagado, aceso ou piscando) | GPIO 26 |
 | 6 | Resistor 330 Ω | 1 | limita a corrente do LED | ≈ 3,9 mA |
 | 7 | Buzzer passivo | 1 | alerta sonoro | GPIO 25, `tone()` 1 kHz |
 | 8 | Transistor NPN BC337 + resistor 1 kΩ (base) | 1 + 1 | aciona o buzzer | a carga não sai direto do GPIO |

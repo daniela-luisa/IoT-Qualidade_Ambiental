@@ -73,19 +73,21 @@ Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e ex
 | Atuador | Efeito | Duração | Quem aciona |
 |---|---|---|---|
 | **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 3), desliga sozinha; nunca acima de `duracaoMaxS`. O relé só fecha 1 s depois do "on", após 2 bipes de aviso | Admin, regra remota do backend ou regra local da placa; **travada** pelo backend com o reservatório vazio |
-| **LED** (GPIO 26) | Alerta visual + luz de status | 1 a 60 s (padrão 8) por comando | Admin e backend (alarmes). Fora isso mostra o estado da placa (tabela abaixo) |
+| **LED** (GPIO 26) | Alerta visual | 1 a 60 s (padrão 8) por comando | Admin e backend (alarmes). Fora isso: aceso sem conexão com a planta em condição ruim, piscando com a estação com problema (tabela abaixo) |
 | **Buzzer** (GPIO 25, `tone` 1 kHz) | Alerta sonoro | 1 a 60 s (padrão 8) | Admin e backend (alarme de reservatório vazio, estação sem bomba). Sozinho, só os 2 bipes antes da bomba |
 | **Botão BOOT** (GPIO 0, da própria placa) | Silencia o alarme | — | Pessoa ao lado da planta: apaga LED/buzzer e avisa o backend, que para de repetir o alarme |
 
-**LED de status** (feedback local, sem decidir alerta; quem decide alerta com a placa online é o backend):
+**O que a estação sinaliza** (só 3 estados de LED e 2 sons, para qualquer pessoa entender):
 
-| LED | Significa |
+| Sinal | Significa |
 |---|---|
-| Aceso | comando de LED (alarme do backend/painel) ou bomba regando |
-| Pisca rápido (150 ms) | modo seguro: falha de sensor, confira a fiação |
-| Aceso fixo, sem broker | sem conexão e condição `inadequado` (alerta local) |
-| Pisca devagar (1 s) | conectando ao Wi-Fi/broker |
-| Piscada curta a cada 5 s | conectada e funcionando (sinal de vida) |
+| LED **apagado** | tudo certo |
+| LED **aceso** | a planta precisa de atenção: alarme do backend ou, sem conexão, condição `inadequado` (regra local) |
+| LED **piscando** | a estação está com problema: sem conexão com o broker ou sensor com falha (modo seguro) |
+| **2 bipes curtos** | a bomba vai ligar em 1 s |
+| **Bipe longo** | falta água: reservatório vazio (estação com bomba) ou regar à mão (estação sem bomba). Repete até alguém apertar o BOOT |
+
+Os alarmes (LED aceso + bipe longo) com a placa online são decididos pelo backend; a placa só mostra o estado dela e dá os 2 bipes de segurança antes da bomba.
 
 ### Reservatório vazio
 
