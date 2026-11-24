@@ -3,35 +3,54 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <title>MACP · Qualidade Ambiental</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- ======================= LOGIN ======================= -->
   <section id="tela-login" class="login">
-    <form id="form-login" class="card">
-      <h1>MACP</h1>
-      <p class="mudo">Monitoramento ambiental, Grupo 5</p>
-      <label>E-mail <input id="login-email" type="email" autocomplete="username" required></label>
-      <label>Senha <input id="login-senha" type="password" autocomplete="current-password" required></label>
-      <button type="submit">Entrar</button>
+    <form id="form-login" class="card login-card" novalidate>
+      <div class="marca">
+        <span class="logo" aria-hidden="true"></span>
+        <div>
+          <h1>MACP</h1>
+          <p class="mudo">Monitoramento ambiental de plantas · Grupo 5</p>
+        </div>
+      </div>
+      <label>E-mail <input id="login-email" type="email" autocomplete="username" required autofocus></label>
+      <label>Senha
+        <span class="campo-senha">
+          <input id="login-senha" type="password" autocomplete="current-password" required>
+          <button type="button" id="ver-senha" class="fantasma" aria-label="Mostrar senha" aria-pressed="false">mostrar</button>
+        </span>
+      </label>
+      <button type="submit" id="btn-entrar">Entrar</button>
       <p id="login-erro" class="erro" role="alert"></p>
     </form>
   </section>
 
-  <main id="tela-app" hidden>
+  <!-- ======================= APP ======================= -->
+  <div id="tela-app" hidden>
     <header class="topo">
-      <h1>MACP</h1>
-      <span id="saude" class="badge">...</span>
-      <span class="espaco"></span>
-      <span id="usuario" class="mudo"></span>
-      <button id="btn-sair" class="sec">Sair</button>
+      <div class="topo-in">
+        <div class="marca">
+          <span class="logo" aria-hidden="true"></span>
+          <h1>MACP</h1>
+        </div>
+        <span id="saude" class="pilula" title="Situação do backend, do banco e do broker MQTT"><i class="ponto"></i><span>conectando…</span></span>
+        <span id="atualizado" class="mudo pequena" aria-live="off"></span>
+        <span class="espaco"></span>
+        <span id="usuario" class="usuario"></span>
+        <button id="btn-sair" class="sec">Sair</button>
+      </div>
     </header>
 
-    <section>
-      <h2>Estações</h2>
-      <div id="cards" class="grade"></div>
-    </section>
+    <div id="faixa-offline" class="faixa" role="alert" hidden>
+      Sem conexão com o servidor. Os dados abaixo podem estar desatualizados — tentando de novo…
+    </div>
 
+<<<<<<< Updated upstream
     <section class="duas">
       <div class="card">
         <h2>Alertas ativos</h2>
@@ -55,34 +74,31 @@
         <p id="cmd-msg" class="mudo" role="status"></p>
       </div>
     </section>
+=======
+    <main>
+      <!-- resumo -->
+      <section class="kpis" id="kpis" aria-label="Resumo"></section>
+>>>>>>> Stashed changes
 
-    <section class="card">
-      <h2>Comandos recentes</h2>
-      <p class="mudo">O estado só vira <b>confirmado</b> quando o dispositivo publica o estado depois de agir.</p>
-      <div class="rolagem">
-        <table>
-          <thead><tr><th>Quando</th><th>Estação</th><th>Comando</th><th>Origem</th><th>Estado</th><th>Motivo</th></tr></thead>
-          <tbody id="tab-comandos"></tbody>
-        </table>
-      </div>
-    </section>
+      <!-- estacoes -->
+      <section>
+        <div class="titulo-secao">
+          <h2>Estações</h2>
+          <p id="aviso-papel" class="mudo pequena" hidden>Perfil <b>operador</b>: você acompanha tudo, mas só um administrador envia comandos e altera regras.</p>
+        </div>
+        <div id="cards" class="grade-cards">
+          <div class="card esqueleto" aria-hidden="true"></div>
+          <div class="card esqueleto" aria-hidden="true"></div>
+        </div>
+      </section>
 
-    <section class="card">
-      <h2>Painel analítico</h2>
-      <div class="linha">
-        <label>Estação <select id="pn-disp"></select></label>
-        <label>Período
-          <select id="pn-horas">
-            <option value="1">1 hora</option>
-            <option value="6">6 horas</option>
-            <option value="24">24 horas</option>
-          </select>
-        </label>
-      </div>
-      <div id="resumo" class="resumo"></div>
-      <div class="graficos" id="graficos"></div>
-    </section>
+      <section class="duas">
+        <div class="card">
+          <h2>Alertas ativos</h2>
+          <ul id="alertas" class="lista"></ul>
+        </div>
 
+<<<<<<< Updated upstream
     <section class="duas">
       <div class="card">
         <h2>Regra de irrigação automática</h2>
@@ -104,6 +120,92 @@
       </div>
     </section>
   </main>
+=======
+        <div class="card" id="card-comando">
+          <h2>Enviar comando</h2>
+          <form id="form-comando" class="grade-form">
+            <label>Estação <select id="cmd-disp"></select></label>
+            <label>Atuador
+              <select id="cmd-alvo"><!-- refeito pelo app.js com os atuadores que a estacao tem -->
+                <option value="bomba">Bomba</option>
+                <option value="led">LED</option>
+                <option value="buzzer">Buzzer</option>
+              </select>
+            </label>
+            <fieldset class="segmentado">
+              <legend>Ação</legend>
+              <div class="opcoes">
+                <label><input type="radio" name="cmd-acao" value="on" checked> Ligar</label>
+                <label><input type="radio" name="cmd-acao" value="off"> Desligar</label>
+              </div>
+            </fieldset>
+            <label><span>Duração <span class="mudo" id="cmd-dur-faixa">(1 a 15 s)</span></span>
+              <input id="cmd-dur" type="number" min="1" max="15" value="5" required inputmode="numeric">
+            </label>
+            <button type="submit" id="cmd-enviar">Enviar comando</button>
+          </form>
+          <div id="cmd-acomp" class="acompanha" hidden aria-live="polite"></div>
+          <p id="cmd-sem-permissao" class="mudo" hidden>Seu perfil não envia comandos.</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="titulo-secao">
+          <h2>Comandos recentes</h2>
+          <p class="mudo pequena">Um comando só vira <b>Confirmado</b> quando a estação publica o novo estado depois de agir.</p>
+        </div>
+        <div class="rolagem">
+          <table>
+            <thead><tr><th>Quando</th><th>Estação</th><th>Comando</th><th>Origem</th><th>Situação</th><th>Detalhe</th></tr></thead>
+            <tbody id="tab-comandos"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="titulo-secao">
+          <h2>Painel analítico</h2>
+          <div class="linha">
+            <label>Estação <select id="pn-disp"></select></label>
+            <label>Período
+              <select id="pn-horas">
+                <option value="1">Última hora</option>
+                <option value="6">Últimas 6 horas</option>
+                <option value="24">Últimas 24 horas</option>
+                <option value="168">Últimos 7 dias</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div id="resumo" class="resumo"></div>
+        <div class="graficos" id="graficos"></div>
+      </section>
+
+      <section class="duas">
+        <div class="card">
+          <h2>Regra automática</h2>
+          <p id="rg-desc" class="mudo">Se a umidade do solo ficar abaixo do limiar durante a janela, o backend envia um comando de bomba.</p>
+          <form id="form-regra" class="grade-form">
+            <label>Estação <select id="rg-disp"></select></label>
+            <label>Limiar do solo (%) <input id="rg-limiar" type="number" min="10" max="80" step="1" required inputmode="numeric"></label>
+            <label>Janela da média (min) <input id="rg-janela" type="number" min="1" max="120" required inputmode="numeric"></label>
+            <label>Intervalo mínimo (s) <input id="rg-intervalo" type="number" min="30" max="3600" required inputmode="numeric"></label>
+            <label><span id="rg-dur-rotulo">Duração da bomba (s)</span> <input id="rg-dur" type="number" min="1" max="15" required inputmode="numeric"></label>
+            <label class="check"><input id="rg-ativa" type="checkbox"> Regra ativa</label>
+            <button type="submit" id="rg-salvar">Salvar regra</button>
+          </form>
+          <p id="rg-msg" class="mudo" role="status"></p>
+        </div>
+        <div class="card">
+          <h2>Histórico de eventos</h2>
+          <ul id="eventos" class="lista eventos"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+>>>>>>> Stashed changes
 
   <script src="vendor/chart.umd.js"></script>
   <script src="app.js"></script>
