@@ -84,7 +84,6 @@ def criar_comando(
             raise DispositivoDesconhecido(dispositivo_id)
         if comando["alvo"] in contrato.ATUADORES and \
                 comando["alvo"] not in contrato.recursos_efetivos(dispositivo["recursos"])["atuadores"]:
-            # nem chega a publicar: o firmware rejeitaria com o mesmo motivo
             raise contrato.ErroContrato("alvo_invalido", f"{dispositivo_id} nao tem {comando['alvo']}")
         broker_ok = ponte is not None and ponte.conectado
         if broker_ok and not dispositivo["online"]:

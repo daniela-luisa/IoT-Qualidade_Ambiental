@@ -14,9 +14,10 @@ GRANDEZAS = {
 MODOS = {"automatico", "manual", "seguro"}
 CONDICOES = {"adequado", "atencao", "inadequado"}
 STATUS = {"online", "offline"}
+EVENTOS_DISPOSITIVO = {"bomba", "modo", "condicao", "alarme"}
 
 ATUADORES = {
-    "bomba": (1, 15, 5),
+    "bomba": (1, 15, 3),
     "led": (1, 60, 8),
     "buzzer": (1, 60, 8),
 }
@@ -25,6 +26,7 @@ PARAMETROS_CONFIG = {
     "limiarSoloSecoPct": (10, 80),
     "intervaloMinS": (30, 3600),
     "duracaoMaxS": (1, 15),
+    "bombaBloqueada": (0, 1),
 }
 
 ALVOS = set(ATUADORES) | {"config"}
@@ -38,6 +40,7 @@ MOTIVOS = {
     "valor_fora_da_faixa",
     "json_invalido",
     "versao_nao_suportada",
+    "bomba_bloqueada",
 }
 
 ETAPAS = {"recebido", "executado", "confirmado"}
@@ -119,8 +122,6 @@ def validar_estado(dados: dict) -> dict:
 
 
 def validar_recursos(valor) -> dict | None:
-    """Campo "recursos" do estado. Nomes desconhecidos sao descartados; formato
-    invalido devolve None (o backend mantem o que ja sabia)."""
     if not isinstance(valor, dict):
         return None
     sensores, atuadores = valor.get("sensores"), valor.get("atuadores")
@@ -133,7 +134,6 @@ def validar_recursos(valor) -> dict | None:
 
 
 def recursos_efetivos(valor) -> dict:
-    """Recursos guardados no banco, ou todos se a estacao nunca declarou."""
     declarados = validar_recursos(valor)
     if declarados is None:
         return {"sensores": list(GRANDEZAS), "atuadores": list(ATUADORES)}
@@ -145,6 +145,16 @@ def validar_status(dados: dict) -> str:
     if status not in STATUS:
         raise ErroContrato("status_invalido", repr(status))
     return status
+
+
+def validar_evento(dados: dict) -> tuple[str, str]:
+    tipo = dados.get("tipo")
+    if tipo not in EVENTOS_DISPOSITIVO:
+        raise ErroContrato("evento_invalido", repr(tipo))
+    detalhe = dados.get("detalhe")
+    if not isinstance(detalhe, str) or not detalhe:
+        raise ErroContrato("evento_invalido", f"detalhe={detalhe!r}")
+    return tipo, detalhe[:200]
 
 
 def validar_confirmacao(dados: dict) -> dict:
@@ -192,7 +202,6 @@ def validar_comando(alvo, acao, duracao, parametros) -> dict:
                 raise ErroContrato("valor_fora_da_faixa", f"parametro desconhecido {nome}")
             numero = _numero(valor)
             minimo, maximo = PARAMETROS_CONFIG[nome]
-            # o firmware so aceita inteiro (ArduinoJson is<int>): 30.5 seria rejeitado la na placa
             if numero is None or not numero.is_integer() or not (minimo <= numero <= maximo):
                 raise ErroContrato("valor_fora_da_faixa", f"{nome}={valor!r} deve ser inteiro de {minimo} a {maximo}")
             normalizados[nome] = int(numero)

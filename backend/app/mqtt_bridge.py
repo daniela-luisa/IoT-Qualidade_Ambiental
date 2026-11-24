@@ -29,6 +29,7 @@ class PonteMQTT:
             (f"{p}/+/estado", 1),
             (f"{p}/+/status", 1),
             (f"{p}/+/confirmacao", 1),
+            (f"{p}/+/evento", 1),
         ]
 
     def iniciar(self) -> None:

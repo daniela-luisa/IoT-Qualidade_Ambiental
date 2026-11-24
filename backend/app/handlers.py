@@ -4,7 +4,7 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from . import alertas, comandos, contrato, db, notify
+from . import alertas, comandos, contrato, db
 from .config import config
 
 log = logging.getLogger("macp.handlers")
@@ -46,7 +46,6 @@ def _tratar(topico: str, payload: bytes) -> None:
         return
 
     chegada = contrato.agora_utc()
-    pendentes: list[tuple] = []
 
     with db.transacao() as conn:
         existe = conn.execute(text("SELECT 1 FROM dispositivos WHERE id = :d"), {"d": device_id}).first()
@@ -65,7 +64,9 @@ def _tratar(topico: str, payload: bytes) -> None:
             elif tipo == "estado":
                 _estado(conn, device_id, dados)
             elif tipo == "status":
-                _status(conn, device_id, dados, pendentes)
+                _status(conn, device_id, dados)
+            elif tipo == "evento":
+                _evento(conn, device_id, dados, chegada)
             elif tipo == "confirmacao":
                 _confirmacao(conn, device_id, dados)
             else:
@@ -79,12 +80,7 @@ def _tratar(topico: str, payload: bytes) -> None:
             db.registrar_evento(conn, device_id, tipo_evento, detalhe)
             log.warning("%s %s: %s", tipo_evento, topico, erro)
 
-    for args in pendentes:
-        notify.agendar(*args)
 
-
-# Sensor quebrado manda null a cada 5 s: sem isto seriam ~720 eventos por hora por grandeza,
-# e a lista de eventos da interface so mostraria isso. Um registro por minuto ja e evidencia.
 FALHA_SENSOR_JANELA_S = 60
 
 
@@ -150,8 +146,6 @@ def _estado(conn: Connection, device_id: str, dados: dict) -> None:
     if campos["recursos"] and campos["recursos"] != anterior["recursos"]:
         atuadores = ", ".join(campos["recursos"]["atuadores"]) or "nenhum"
         db.registrar_evento(conn, device_id, "recursos", f"atuadores: {atuadores}")
-    # Efeito fisico da bomba, venha de onde vier (comando do backend OU irrigacao local da placa):
-    # o firmware publica estado ao ligar e ao desligar, entao cada borda vira um evento.
     bomba = dados.get("bomba")
     if bomba in ("on", "off") and bomba != (anterior["bomba"] or "off"):
         db.registrar_evento(conn, device_id, "bomba", f"{bomba} (modo {campos['modo'] or '-'})")
@@ -160,7 +154,7 @@ def _estado(conn: Connection, device_id: str, dados: dict) -> None:
         log.info("%s: %d comando(s) confirmado(s) pelo estado", device_id, promovidos)
 
 
-def _status(conn: Connection, device_id: str, dados: dict, pendentes: list) -> None:
+def _status(conn: Connection, device_id: str, dados: dict) -> None:
     status = contrato.validar_status(dados)
     online = status == "online"
     anterior = db.linha(conn, "SELECT online FROM dispositivos WHERE id = :d FOR UPDATE", d=device_id)
@@ -175,11 +169,17 @@ def _status(conn: Connection, device_id: str, dados: dict, pendentes: list) -> N
 
     if online:
         alertas.resolver(conn, device_id, "dispositivo_offline")
-    elif alertas.abrir(conn, device_id, "dispositivo_offline", f"{device_id} ficou offline"):
-        pendentes.append(
-            (device_id, "dispositivo_offline", f"[MACP] {device_id} offline",
-             f"A estacao {device_id} perdeu a conexao com o broker (LWT recebido).")
-        )
+    else:
+        alertas.abrir(conn, device_id, "dispositivo_offline", f"{device_id} ficou offline")
+
+
+def _evento(conn: Connection, device_id: str, dados: dict, chegada) -> None:
+    tipo, detalhe = contrato.validar_evento(dados)
+    criado_em = contrato.interpretar_ts(dados.get("ts"), chegada)
+    conn.execute(
+        text("INSERT INTO eventos (dispositivo_id, tipo, detalhe, criado_em) VALUES (:d, :t, :x, :c)"),
+        {"d": device_id, "t": tipo, "x": detalhe, "c": criado_em},
+    )
 
 
 def _confirmacao(conn: Connection, device_id: str, dados: dict) -> None:

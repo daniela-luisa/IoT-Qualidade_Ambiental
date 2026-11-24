@@ -1,6 +1,5 @@
 [hidden] { display: none !important; }
 
-/* ---------- cores (claro / escuro) ---------- */
 :root {
   --bg: #f3f5f4; --card: #ffffff; --card2: #f6f8f7; --tx: #17221c; --mudo: #5f6d66; --bd: #dfe5e2;
   --acc: #0f766e; --acc-tx: #ffffff; --acc-suave: #d8efec;
@@ -30,7 +29,6 @@ section { margin-bottom: 16px; }
 .espaco { flex: 1; }
 :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 
-/* ---------- blocos ---------- */
 .card { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 16px; min-width: 0; overflow-wrap: anywhere; box-shadow: var(--sombra); }
 .duas { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
 .titulo-secao { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; margin-bottom: 10px; }
@@ -38,7 +36,6 @@ section { margin-bottom: 16px; }
 .linha { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
 .rolagem { overflow-x: auto; }
 
-/* ---------- formularios ---------- */
 label { display: flex; flex-direction: column; font-size: 13px; color: var(--mudo); gap: 4px; }
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--tx); font-size: 14px; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid var(--bd); border-radius: 8px; background: var(--card); color: var(--tx); min-width: 0; max-width: 100%; }
@@ -51,7 +48,6 @@ button.perigo { background: var(--bad-bg); color: var(--bad); }
 button.fantasma { background: transparent; color: var(--mudo); padding: 4px 8px; font-size: 13px; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 .grade-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
-/* "Ligar | Desligar" como botoes segmentados; o radio fica invisivel mas continua focavel pelo teclado */
 .segmentado { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .segmentado legend { font-size: 13px; color: var(--mudo); padding: 0; margin-bottom: 4px; float: left; width: 100%; }
 .segmentado .opcoes { display: flex; border: 1px solid var(--bd); border-radius: 8px; padding: 3px; gap: 3px; clear: both; }
@@ -61,7 +57,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .segmentado label:has(input:focus-visible) { outline: 2px solid var(--acc); outline-offset: 2px; }
 .erro { color: var(--bad); min-height: 1.2em; margin: 0; }
 
-/* ---------- selos ---------- */
 .badge, .pilula { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 500; background: var(--neutro-bg); color: var(--tx); white-space: nowrap; }
 .b-ok { background: var(--ok-bg); color: var(--ok); }
 .b-warn { background: var(--warn-bg); color: var(--warn); }
@@ -72,7 +67,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 @keyframes pulso { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
-/* ---------- topo ---------- */
 .topo { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--bd); }
 .topo-in { max-width: 1180px; margin: 0 auto; padding: 10px 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .marca { display: flex; align-items: center; gap: 10px; }
@@ -82,7 +76,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .usuario b { color: var(--tx); font-weight: 500; }
 .faixa { background: var(--bad-bg); color: var(--bad); text-align: center; padding: 8px 16px; font-size: 14px; font-weight: 500; }
 
-/* ---------- KPIs ---------- */
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .kpi { background: var(--card); border: 1px solid var(--bd); border-radius: 12px; padding: 12px 14px; box-shadow: var(--sombra); }
 .kpi span { font-size: 12px; color: var(--mudo); display: block; }
@@ -90,7 +83,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .kpi small { color: var(--mudo); font-size: 12px; margin-left: 4px; }
 .kpi.alerta b { color: var(--bad); }
 
-/* ---------- cartoes das estacoes ---------- */
 .grade-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
 .estacao { display: flex; flex-direction: column; gap: 12px; }
 .estacao.off { opacity: .85; }
@@ -123,7 +115,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .esqueleto { min-height: 280px; background: linear-gradient(90deg, var(--card) 0%, var(--card2) 50%, var(--card) 100%); background-size: 200% 100%; animation: brilho 1.4s infinite; }
 @keyframes brilho { to { background-position: -200% 0; } }
 
-/* ---------- listas ---------- */
 .lista { list-style: none; margin: 0; padding: 0; }
 .lista li { padding: 8px 0; border-bottom: 1px solid var(--bd); display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .lista li:last-child { border: 0; }
@@ -131,7 +122,6 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .lista .tempo { margin-left: auto; font-size: 12px; color: var(--mudo); }
 .eventos { max-height: 360px; overflow-y: auto; font-size: 14px; }
 
-/* ---------- acompanhamento do comando ---------- */
 .acompanha { margin-top: 12px; border: 1px solid var(--bd); border-radius: 10px; padding: 10px 12px; background: var(--card2); }
 .acompanha p { margin: 0 0 8px; font-size: 14px; }
 .etapas { display: flex; gap: 4px; list-style: none; margin: 0; padding: 0; }
@@ -140,27 +130,23 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .etapas li.atual { border-color: var(--warn); color: var(--warn); }
 .etapas li.erro { border-color: var(--bad); color: var(--bad); }
 
-/* ---------- tabela ---------- */
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--bd); white-space: nowrap; }
 th { color: var(--mudo); font-weight: 500; font-size: 13px; }
 td.detalhe { white-space: normal; color: var(--mudo); min-width: 180px; }
 tbody tr:hover { background: var(--card2); }
 
-/* ---------- painel ---------- */
 .resumo { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 4px 0 14px; }
 .resumo .leit b { font-size: 17px; }
 .graficos { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }
 .graficos .g { position: relative; height: 240px; min-width: 0; border: 1px solid var(--bd); border-radius: 10px; padding: 8px; }
 .graficos .g .vazio { position: absolute; inset: 0; display: grid; place-items: center; color: var(--mudo); font-size: 14px; pointer-events: none; }
 
-/* ---------- toasts ---------- */
 .toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 20; max-width: min(380px, calc(100vw - 32px)); }
 .toast { background: var(--card); color: var(--tx); border: 1px solid var(--bd); border-left: 4px solid var(--acc); border-radius: 10px; padding: 10px 14px; box-shadow: 0 6px 24px rgba(0, 0, 0, .15); font-size: 14px; animation: entra .2s ease-out; }
 .toast.ok { border-left-color: var(--ok); } .toast.bad { border-left-color: var(--bad); } .toast.warn { border-left-color: var(--warn); }
 @keyframes entra { from { transform: translateY(8px); opacity: 0; } }
 
-/* ---------- login ---------- */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
 .login-card { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 14px; padding: 24px; }
 .login-card .marca { margin-bottom: 6px; }
@@ -169,7 +155,6 @@ tbody tr:hover { background: var(--card2); }
 .campo-senha:focus-within { outline: 2px solid var(--acc); outline-offset: 1px; }
 .campo-senha input:focus-visible { outline: none; }
 
-/* ---------- celular ---------- */
 @media (max-width: 560px) {
   main { padding: 12px; }
   .duas, .graficos, .grade-cards, .grade-form { grid-template-columns: 1fr; }

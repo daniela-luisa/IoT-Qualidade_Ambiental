@@ -1,10 +1,3 @@
-// Estacao ambiental - Grupo 5 - N3 (arquivo unico para o Wokwi). Contrato MQTT v1.
-// fw 1.2.1: rele acionado em open-drain no prototipo fisico (modulo de 5 V nao soltava com o HIGH de 3,3 V do ESP32).
-//
-// LIGACAO DA BOMBA (prototipo fisico):
-//   ESP 3V3 -> VCC do rele | ESP GND -> GND do rele | GPIO 27 -> IN do rele (direto, sem diodo)
-//   Fonte 5V (+) -> COM | NO -> bomba (+) | bomba (-) -> Fonte (-) | NC vazio
-//   Diodo 1N4007 em paralelo com a bomba (faixa no +). A bomba NAO usa o 5V do ESP.
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <DHT.h>
@@ -12,35 +5,24 @@
 #include <time.h>
 #include <ArduinoJson.h>
 
-// ===================== CONFIGURACAO =====================
-// MODO_SIMULADOR 1 = Wokwi | 0 = prototipo fisico. Nos dois casos o broker e o Mosquitto do
-// docker compose (porta 1883 do notebook), o mesmo que o backend assina.
-//   Wokwi: o ESP32 simulado alcanca o notebook pelo nome host.wokwi.internal. Funciona no
-//          Wokwi para VS Code; no site wokwi.com so com o Private IoT Gateway ligado.
-//   Fisico: criar secrets.h (fora do git) com WIFI_SSID, WIFI_PASSWORD, MQTT_HOST (IP do
-//          notebook) e, opcional, OTA_PASSWORD. No modo simulador o secrets.h e ignorado.
 #define MODO_SIMULADOR 0
 
-#define DEVICE_ID   "estacao-01"      // a segunda placa usa "estacao-02"
-#define FW_VERSION  "1.4.0"
-// 1 = esta placa tem rele + bomba. 0 = estacao SEM bomba: rejeita comando de bomba (alvo_invalido),
-// nao irriga sozinha e avisa o backend pelo campo "recursos" do estado. Com o solo seco, o backend
-// passa a acionar LED + buzzer nela para alguem regar na mao.
+#define DEVICE_ID   "estacao-01"
+#define FW_VERSION  "1.6.0"
 #define TEM_BOMBA   1
 
-// Igual ao MQTT_PREFIX do .env do backend (padrao "grupo5"). Com prefixo diferente o backend nao ve nada.
 #define MQTT_PREFIX "grupo5"
 #define MQTT_PORT   1883
 
 #if MODO_SIMULADOR
-  #define WIFI_SSID         "Wokwi-GUEST"          // unica rede que o ESP32 simulado enxerga
+  #define WIFI_SSID         "Wokwi-GUEST"
   #define WIFI_PASSWORD     ""
-  #define MQTT_HOST         "host.wokwi.internal"  // = o notebook (Mosquitto do docker compose)
-  #define DHT_TIPO          DHT22     // Wokwi so tem DHT22
-  #define RELE_ATIVO_BAIXO  0         // rele do Wokwi liga em ALTO (diagram.json: bomba no contato NO)
-  #define MQTT_KEEPALIVE_S  60        // Wokwi roda mais devagar que o tempo real
+  #define MQTT_HOST         "host.wokwi.internal"
+  #define DHT_TIPO          DHT22
+  #define RELE_ATIVO_BAIXO  0
+  #define MQTT_KEEPALIVE_S  60
   #define USAR_OTA          0
-  #define USAR_NTP          0         // relogio simulado atrasa; ts vai null e o backend usa a hora de chegada
+  #define USAR_NTP          0
 #else
   #if __has_include("secrets.h")
     #include "secrets.h"
@@ -50,15 +32,14 @@
     #define WIFI_PASSWORD   "leo12345"
   #endif
   #ifndef MQTT_HOST
-    #define MQTT_HOST       "10.252.1.58"   // IP do notebook na rede local (macOS: ipconfig getifaddr en0)
+    #define MQTT_HOST       "10.252.1.58"
   #endif
   #define DHT_TIPO          DHT11
-  #define RELE_ATIVO_BAIXO  1         // modulo do grupo liga em BAIXO (IN solto = desligado, IN em GND = ligado)
+  #define RELE_ATIVO_BAIXO  1
   #define MQTT_KEEPALIVE_S  15
   #define USAR_OTA          1
   #define USAR_NTP          1
 #endif
-// Wokwi (photoresistor-sensor) e os modulos LDR comuns: mais luz = tensao MENOR no AO.
 #define LDR_INVERTIDO     1
 
 #define PIN_DHT     14
@@ -67,87 +48,87 @@
 #define PIN_LED     26
 #define PIN_BUZZER  25
 #define PIN_RELE    27
+#define PIN_BOTAO   0
 
-// calibracao do solo (ADC 0..4095; ALTO = seco). Medir no sensor real: no ar (SECO) e na agua (MOLHADO).
 #define SOLO_ADC_SECO     3200
 #define SOLO_ADC_MOLHADO  1200
-// Sensor de solo "sendo lido": leitura bruta abaixo do minimo = fio AO solto, sensor sem VCC ou curto com GND.
-// Sem teto: no ar o sensor satura perto de 4095, e isso e SOLO SECO (leitura valida), nao falha.
-// Sem solo valido a bomba NAO liga (o comando e rejeitado como modo_seguro) e a telemetria vai null.
 #define SOLO_ADC_MIN_VALIDO  100
 #define SOLO_ADC_MAX_VALIDO  4095
-// 1 = a bomba so liga com o sensor de solo lendo (padrao, usar sempre). 0 = SO para testar o rele na bancada.
 #define EXIGIR_SOLO_VALIDO   1
-// 1 = a propria placa liga a bomba quando o solo fica abaixo de limiarSoloSecoPct (so em modo automatico,
-// respeitando intervaloMinS e duracaoMaxS). 0 = so o backend liga a bomba.
 #define IRRIGACAO_LOCAL      1
 
 #define PERIODO_TELEMETRIA_MS  5000UL
 #define PERIODO_ESTADO_MS      30000UL
 #define RECONEXAO_MQTT_MS      5000UL
-#define PISCA_ALERTA_MS        500UL
+#define AVISO_BOMBA_MS         1000UL
 #define FUSO_SEGUNDOS          (-3 * 3600)
+#define HISTORICO_OFFLINE      USAR_NTP
+#define HIST_MAX_LEITURAS      1440
+#define HIST_MAX_EVENTOS       64
+#define HIST_ENVIO_MS          50UL
 #if USAR_OTA
   #include <ArduinoOTA.h>
 #endif
-// ========================================================
 
-// ===================== LOGICA (sem hardware) =====================
-// logica.h - regras da estacao SEM dependencia de hardware (compila no PC com g++).
-// Tudo que decide "pode ou nao pode" mora aqui: intertravamento da bomba, modos,
-// validacao de comando, duplicados, e a montagem dos JSON do contrato MQTT v1.
-// O .ino so liga isto aos pinos e ao MQTT.
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
 
-
 namespace g5 {
 
 enum Modo : uint8_t { AUTOMATICO = 0, MANUAL = 1, SEGURO = 2 };
 inline const char* nomeModo(Modo m) { return m == AUTOMATICO ? "automatico" : (m == MANUAL ? "manual" : "seguro"); }
 
-// ---- constantes do contrato v1 ----
-constexpr int BOMBA_DUR_MIN = 1, BOMBA_DUR_MAX = 15, BOMBA_DUR_PADRAO = 5;
+constexpr int BOMBA_DUR_MIN = 1, BOMBA_DUR_MAX = 15, BOMBA_DUR_PADRAO = 3;
 constexpr int LED_DUR_MIN = 1, LED_DUR_MAX = 60, LED_DUR_PADRAO = 8;
 constexpr uint32_t MANUAL_TIMEOUT_MS = 60000UL;
-constexpr int FALHAS_PARA_SEGURO = 3;  // leituras seguidas do DHT com erro
+constexpr int FALHAS_PARA_SEGURO = 3;
 constexpr int N_VISTOS = 16;
 
-// ref ligeiramente no futuro (agora lido antes do evento) nao conta como passado; funciona com estouro do millis().
 inline bool passou(uint32_t agora, uint32_t ref, uint32_t ms) { int32_t d = (int32_t)(agora - ref); return d >= 0 && (uint32_t)d >= ms; }
 
 struct Cfg {
-  int limiarSoloSecoPct = 30;  // 10..80
-  int intervaloMinS = 60;      // 30..3600
-  int duracaoMaxS = 15;        // 1..15
+  int limiarSoloSecoPct = 30;
+  int intervaloMinS = 60;
+  int duracaoMaxS = 15;
+  int bombaBloqueada = 0;
 };
 
-// Resultado de processar um comando. O .ino publica "recebido" e, se executado, "executado".
 struct Resposta {
   char commandId[40] = "?";
   bool aceito = false;
-  const char* motivo = nullptr;  // so quando aceito == false
-  bool estadoMudou = false;      // publicar estado
-  bool cfgMudou = false;         // gravar na NVS
+  const char* motivo = nullptr;
+  bool estadoMudou = false;
+  bool cfgMudou = false;
 };
 
 class Estacao {
  public:
   Cfg cfg;
-  Modo modo = SEGURO;  // boot em seguro; a primeira leitura valida do DHT passa para automatico
+  Modo modo = SEGURO;
   bool bomba = false, led = false, buzzer = false;
-  bool temBomba = true;    // false = estacao sem rele/bomba (TEM_BOMBA 0)
-  bool exigirSolo = true;  // bomba so liga com o sensor de solo lendo
-  bool soloOk = false;     // ultima leitura do solo foi valida
+  bool temBomba = true;
+  bool exigirSolo = true;
+  bool soloOk = false;
+  uint32_t avisoBombaMs = 0;
 
-  // chamar a cada loop(). Retorna true se algo mudou (desligou atuador, mudou de modo).
+  bool bombaAcionada(uint32_t agora) const { return bomba && passou(agora, bombaIni, 0); }
+  int32_t msNoAviso(uint32_t agora) const {
+    if (!bomba || passou(agora, bombaIni, 0)) return -1;
+    return (int32_t)avisoBombaMs - (int32_t)(bombaIni - agora);
+  }
+  bool silenciar() {
+    bool mudou = led || buzzer;
+    led = false; buzzer = false;
+    return mudou;
+  }
+
   bool tick(uint32_t agora) {
     bool mudou = false;
     if (bomba) {
-      int lim = durBombaS < cfg.duracaoMaxS ? durBombaS : cfg.duracaoMaxS;  // teto vale mesmo se a config baixar no meio
+      int lim = durBombaS < cfg.duracaoMaxS ? durBombaS : cfg.duracaoMaxS;
       if (passou(agora, bombaIni, (uint32_t)lim * 1000UL)) { bomba = false; mudou = true; }
     }
     if (led && passou(agora, ledIni, (uint32_t)durLedS * 1000UL)) { led = false; mudou = true; }
@@ -156,12 +137,10 @@ class Estacao {
     return mudou;
   }
 
-  // chamar a cada ciclo de leitura. Retorna true se algo mudou (modo ou bomba desligada).
-  // Falha do DHT OU do solo (com exigirSolo) conta como falha de sensor: 3 seguidas = modo seguro.
   bool registrarLeituraSensores(bool dhtOk, bool soloValido) {
     soloOk = soloValido;
     bool mudou = false;
-    if (exigirSolo && !soloValido && bomba) { bomba = false; mudou = true; }  // perdeu o solo: desliga na hora
+    if (exigirSolo && !soloValido && bomba) { bomba = false; mudou = true; }
     bool ok = dhtOk && (soloValido || !exigirSolo);
     if (ok) {
       falhasSeguidas = 0;
@@ -171,22 +150,19 @@ class Estacao {
     if (falhasSeguidas < 1000) falhasSeguidas++;
     if (falhasSeguidas >= FALHAS_PARA_SEGURO && modo != SEGURO) {
       modo = SEGURO;
-      bomba = false;  // seguro = bomba desligada na hora
+      bomba = false;
       return true;
     }
     return mudou;
   }
 
-  // Irrigacao automatica local: so em AUTOMATICO (manual = pessoa no controle, seguro = nunca),
-  // com solo valido abaixo do limiar e fora do intervalo minimo desde a ultima irrigacao.
-  // Liga por BOMBA_DUR_PADRAO s (limitado por duracaoMaxS); o tick() desliga sozinho.
   bool irrigarSeSeco(float soloPct, uint32_t agora) {
-    if (!temBomba || modo != AUTOMATICO || bomba) return false;
+    if (!temBomba || modo != AUTOMATICO || bomba || cfg.bombaBloqueada) return false;
     if (exigirSolo && !soloOk) return false;
     if (isnan(soloPct) || soloPct >= (float)cfg.limiarSoloSecoPct) return false;
     if (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)) return false;
     int dur = BOMBA_DUR_PADRAO < cfg.duracaoMaxS ? BOMBA_DUR_PADRAO : cfg.duracaoMaxS;
-    bomba = true; bombaIni = agora; durBombaS = dur; jaIrrigou = true;
+    bomba = true; bombaIni = agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true;
     return true;
   }
 
@@ -211,11 +187,10 @@ class Estacao {
     bool ehAtuador = strcmp(alvo, "bomba") == 0 || strcmp(alvo, "led") == 0 || strcmp(alvo, "buzzer") == 0;
 
     if (!ehConfig && !ehAtuador) return rejeitar(r, "alvo_invalido");
-    if (!temBomba && strcmp(alvo, "bomba") == 0) return rejeitar(r, "alvo_invalido");  // atuador que esta placa nao tem
-    // modo seguro: aceita config e DESLIGAR atuador (os dois sao sempre seguros); ligar e rejeitado
+    if (!temBomba && strcmp(alvo, "bomba") == 0) return rejeitar(r, "alvo_invalido");
     if (modo == SEGURO && ehAtuador && strcmp(acao, "off") != 0) return rejeitar(r, "modo_seguro");
-    // sem leitura valida do solo a bomba nao liga (motivo do contrato: modo_seguro)
     if (exigirSolo && !soloOk && strcmp(alvo, "bomba") == 0 && strcmp(acao, "on") == 0) return rejeitar(r, "modo_seguro");
+    if (cfg.bombaBloqueada && strcmp(alvo, "bomba") == 0 && strcmp(acao, "on") == 0) return rejeitar(r, "bomba_bloqueada");
 
     if (ehConfig) return aplicarConfig(doc, r);
 
@@ -231,7 +206,6 @@ class Estacao {
       else if (d.is<int>()) dur = d.as<int>();
       else return rejeitar(r, "valor_fora_da_faixa");
       if (ehBomba) {
-        // fora da faixa do contrato (1..15) e valor_fora_da_faixa; dentro dela mas acima do limite configurado e intertravamento
         if (dur < BOMBA_DUR_MIN || dur > BOMBA_DUR_MAX) return rejeitar(r, "valor_fora_da_faixa");
         if (dur > cfg.duracaoMaxS) return rejeitar(r, "intertravamento_duracao");
         if (bomba || (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)))
@@ -244,13 +218,12 @@ class Estacao {
     r.aceito = true;
     r.estadoMudou = true;
     if (ehBomba) {
-      if (ligar) { bomba = true; bombaIni = agora; durBombaS = dur; jaIrrigou = true; } else bomba = false;
+      if (ligar) { bomba = true; bombaIni = agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true; } else bomba = false;
     } else if (strcmp(alvo, "led") == 0) {
       if (ligar) { led = true; ledIni = agora; durLedS = dur; } else led = false;
     } else {
       if (ligar) { buzzer = true; buzzerIni = agora; durBuzzerS = dur; } else buzzer = false;
     }
-    // comando de pessoa (origem diferente de "regra") assume o controle: modo manual por 60 s
     if (strcmp(origem, "regra") != 0 && modo != SEGURO) {
       modo = MANUAL;
       manualDesde = agora;
@@ -280,12 +253,14 @@ class Estacao {
 
   Resposta aplicarConfig(JsonDocument& doc, Resposta& r) {
     struct Item { const char* nome; int minimo, maximo; int* destino; };
-    Item itens[3] = {{"limiarSoloSecoPct", 10, 80, &cfg.limiarSoloSecoPct},
+    constexpr int N = 4;
+    Item itens[N] = {{"limiarSoloSecoPct", 10, 80, &cfg.limiarSoloSecoPct},
                      {"intervaloMinS", 30, 3600, &cfg.intervaloMinS},
-                     {"duracaoMaxS", 1, 15, &cfg.duracaoMaxS}};
-    int novos[3];
+                     {"duracaoMaxS", 1, 15, &cfg.duracaoMaxS},
+                     {"bombaBloqueada", 0, 1, &cfg.bombaBloqueada}};
+    int novos[N];
     int presentes = 0;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < N; i++) {
       JsonVariantConst v = doc[itens[i].nome];
       novos[i] = *itens[i].destino;
       if (v.isNull()) continue;
@@ -294,7 +269,8 @@ class Estacao {
       presentes++;
     }
     if (presentes == 0) return rejeitar(r, "valor_fora_da_faixa");
-    for (int i = 0; i < 3; i++) *itens[i].destino = novos[i];  // tudo ou nada
+    for (int i = 0; i < N; i++) *itens[i].destino = novos[i];
+    if (cfg.bombaBloqueada && bomba) bomba = false;
     r.aceito = true;
     r.cfgMudou = true;
     r.estadoMudou = true;
@@ -302,10 +278,8 @@ class Estacao {
   }
 };
 
-// ---------------- conversao de sensores ----------------
 inline float limitar(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
-// raw ADC 0..4095. Sensor de solo: valor ALTO = seco. secoRaw/molhadoRaw vem da calibracao (config.h).
 inline float pctSolo(int raw, int secoRaw, int molhadoRaw) {
   if (secoRaw == molhadoRaw) return 0;
   return limitar((float)(secoRaw - raw) * 100.0f / (float)(secoRaw - molhadoRaw), 0, 100);
@@ -314,16 +288,13 @@ inline float pctLuz(int raw, bool invertido) {
   float p = limitar((float)raw * 100.0f / 4095.0f, 0, 100);
   return invertido ? 100.0f - p : p;
 }
-// temp pode ser NAN (falha do DHT): so entra na regra se valida.
 inline const char* condicao(float soloPct, float temp, float luzPct, int limiarSolo) {
   bool tempRuim = !isnan(temp) && (temp > 32.0f || temp < 10.0f);
-  if (isnan(soloPct) || soloPct < (float)limiarSolo || tempRuim) return "inadequado";  // solo sem leitura = inadequado
+  if (isnan(soloPct) || soloPct < (float)limiarSolo || tempRuim) return "inadequado";
   if (luzPct < 20.0f) return "atencao";
   return "adequado";
 }
 
-// ---------------- JSON do contrato v1 ----------------
-// ts vazio ("") vira null (sem NTP). Todas devolvem o tamanho escrito.
 inline size_t jsonTelemetria(char* buf, size_t n, const char* dev, const char* ts, const char* grandeza, float valor, const char* unidade) {
   JsonDocument d;
   d["v"] = 1; d["deviceId"] = dev;
@@ -338,10 +309,9 @@ inline size_t jsonEstado(char* buf, size_t n, const char* dev, const char* ts, c
   d["v"] = 1; d["deviceId"] = dev;
   if (ts[0]) d["ts"] = ts; else d["ts"] = nullptr;
   d["modo"] = nomeModo(e.modo); d["condicao"] = cond;
-  if (e.temBomba) d["bomba"] = e.bomba ? "on" : "off";  // sem bomba: o campo nao vai
+  if (e.temBomba) d["bomba"] = e.bomba ? "on" : "off";
   d["led"] = e.led ? "on" : "off"; d["buzzer"] = e.buzzer ? "on" : "off";
   d["fw"] = fw;
-  // o que esta placa tem: o backend e a interface se ajustam a isto
   JsonObject rec = d["recursos"].to<JsonObject>();
   JsonArray sens = rec["sensores"].to<JsonArray>();
   sens.add("temperatura"); sens.add("umidade_ar"); sens.add("umidade_solo"); sens.add("luminosidade");
@@ -349,6 +319,7 @@ inline size_t jsonEstado(char* buf, size_t n, const char* dev, const char* ts, c
   if (e.temBomba) atu.add("bomba");
   atu.add("led"); atu.add("buzzer");
   d["limiarSoloSecoPct"] = e.cfg.limiarSoloSecoPct; d["intervaloMinS"] = e.cfg.intervaloMinS; d["duracaoMaxS"] = e.cfg.duracaoMaxS;
+  if (e.temBomba) d["bombaBloqueada"] = e.cfg.bombaBloqueada;
   return serializeJson(d, buf, n);
 }
 inline size_t jsonConfirmacao(char* buf, size_t n, const char* dev, const char* cid, const char* ts, const char* etapa, const char* resultado, const char* motivo) {
@@ -364,8 +335,14 @@ inline size_t jsonStatus(char* buf, size_t n, const char* dev, bool online) {
   d["v"] = 1; d["deviceId"] = dev; d["status"] = online ? "online" : "offline";
   return serializeJson(d, buf, n);
 }
+inline size_t jsonEvento(char* buf, size_t n, const char* dev, const char* ts, const char* tipo, const char* detalhe) {
+  JsonDocument d;
+  d["v"] = 1; d["deviceId"] = dev;
+  if (ts[0]) d["ts"] = ts; else d["ts"] = nullptr;
+  d["tipo"] = tipo; d["detalhe"] = detalhe;
+  return serializeJson(d, buf, n);
+}
 
-// "2026-11-24T09:15:00-03:00" (strftime %z da "-0300"; o contrato quer com dois pontos)
 inline void formatarTs(char* buf, size_t n, const struct tm& t) {
   char z[8] = "";
   strftime(buf, n, "%Y-%m-%dT%H:%M:%S", &t);
@@ -374,33 +351,36 @@ inline void formatarTs(char* buf, size_t n, const struct tm& t) {
   if (strlen(z) == 5 && l + 7 <= n) snprintf(buf + l, n - l, "%.3s:%.2s", z, z + 3);
 }
 
-}  // namespace g5
+}
 
-// ===================== PROGRAMA PRINCIPAL =====================
 DHT dht(PIN_DHT, DHT_TIPO);
 WiFiClient wifi;
 PubSubClient mqtt(wifi);
 Preferences prefs;
 g5::Estacao est;
 
-char T_STATUS[80], T_ESTADO[80], T_COMANDO[80], T_CONF[80], T_TELE[80];
+char T_STATUS[80], T_ESTADO[80], T_COMANDO[80], T_CONF[80], T_TELE[80], T_EVENTO[80];
 char clientId[48];
 const char* condAtual = "indefinida";
 uint32_t ultLeitura = 0, ultEstado = 0, ultTentativaMqtt = 0;
 bool primeiraLeitura = true, ntpIniciado = false, falhaForcada = false;
 bool ledAplicado = false, buzzerAplicado = false, releAplicado = false;
 float ultSolo = NAN, ultLuz = NAN, ultTemp = NAN;
-// regra local (R2): sem broker e com condicao inadequada (ou em modo seguro) o LED pisca sozinho.
-// Bomba: com IRRIGACAO_LOCAL 1 a placa irriga sozinha quando o solo esta seco (ver irrigarSeSeco);
-// comandos do backend continuam valendo (on/off) e um comando de pessoa pausa a regra por 60 s (modo manual).
-bool alertaLocal = false, ledPisca = false;
-uint32_t ultPisca = 0;
+bool alertaLocal = false;
 
-// ------------------------------------------------------------ util
+#if HISTORICO_OFFLINE
+struct Amostra { uint32_t ms; float t, u, solo, luz; };
+struct EventoOff { uint32_t ms; char tipo[10]; char detalhe[48]; };
+Amostra histLeituras[HIST_MAX_LEITURAS];
+EventoOff histEventos[HIST_MAX_EVENTOS];
+int hlIni = 0, hlQtd = 0, heIni = 0, heQtd = 0;
+uint32_t ultEnvioHist = 0;
+#endif
+
 void agoraTs(char* buf, size_t n) {
   buf[0] = 0;
   time_t t = time(nullptr);
-  if (t < 1700000000) return;  // sem NTP: ts = null, o backend usa a hora de chegada
+  if (t < 1700000000) return;
   struct tm info;
   localtime_r(&t, &info);
   g5::formatarTs(buf, n, info);
@@ -408,7 +388,7 @@ void agoraTs(char* buf, size_t n) {
 
 void pub(const char* topico, const char* payload, bool retain) {
   if (!mqtt.connected()) return;
-  mqtt.publish(topico, payload, retain);  // PubSubClient publica em QoS 0 (ver README do firmware)
+  mqtt.publish(topico, payload, retain);
 }
 
 void publicarEstado() {
@@ -433,15 +413,109 @@ void publicarTelemetria(const char* grandeza, float valor, const char* unidade) 
   pub(topico, buf, false);
 }
 
-// ------------------------------------------------------------ atuadores (so aqui se mexe nos pinos)
-// Rele fisico (ativo em BAIXO, modulo de 5 V): o pino nunca vai para HIGH.
-//   ligar    -> pino puxa para GND (corrente no opto = rele fecha COM-NO)
-//   desligar -> pino solto (sem corrente no opto = rele abre). Com HIGH de 3,3 V num modulo
-//               de 5 V sobrava tensao no LED do opto e o rele nao soltava: bomba sempre ligada.
-// Wokwi (ativo em ALTO): saida normal push-pull.
+void guardarLeitura(float t, float u, float solo, float luz, uint32_t agora) {
+#if HISTORICO_OFFLINE
+  int pos;
+  bool cheio = hlQtd == HIST_MAX_LEITURAS;
+  if (cheio) {
+    pos = hlIni;
+    hlIni = (hlIni + 1) % HIST_MAX_LEITURAS;
+  } else {
+    pos = (hlIni + hlQtd) % HIST_MAX_LEITURAS;
+    hlQtd++;
+  }
+  histLeituras[pos] = {agora, t, u, solo, luz};
+  if (!cheio && (hlQtd == 1 || hlQtd % 60 == 0))
+    Serial.printf("[historico] sem broker: %d leitura(s) e %d evento(s) guardados\n", hlQtd, heQtd);
+  else if (cheio && hlIni == 1)
+    Serial.println("[historico] memoria cheia: descartando as leituras mais antigas");
+#endif
+}
+
+void guardarEvento(const char* tipo, const char* detalhe) {
+#if HISTORICO_OFFLINE
+  int pos;
+  if (heQtd == HIST_MAX_EVENTOS) {
+    pos = heIni;
+    heIni = (heIni + 1) % HIST_MAX_EVENTOS;
+  } else {
+    pos = (heIni + heQtd) % HIST_MAX_EVENTOS;
+    heQtd++;
+  }
+  EventoOff& e = histEventos[pos];
+  e.ms = millis();
+  strncpy(e.tipo, tipo, sizeof e.tipo - 1); e.tipo[sizeof e.tipo - 1] = 0;
+  strncpy(e.detalhe, detalhe, sizeof e.detalhe - 1); e.detalhe[sizeof e.detalhe - 1] = 0;
+  Serial.printf("[historico] evento guardado: %s %s\n", tipo, detalhe);
+#endif
+}
+
+void anotarMudancas() {
+  static bool bombaAnt = false;
+  static g5::Modo modoAnt = g5::SEGURO;
+  static const char* condAnt = "indefinida";
+  bool semBroker = !mqtt.connected();
+  char det[48];
+  if (est.bomba != bombaAnt) {
+    bombaAnt = est.bomba;
+    if (semBroker) {
+      snprintf(det, sizeof det, "%s (modo %s, offline)", est.bomba ? "on" : "off", g5::nomeModo(est.modo));
+      guardarEvento("bomba", det);
+    }
+  }
+  if (est.modo != modoAnt) {
+    modoAnt = est.modo;
+    if (semBroker) { snprintf(det, sizeof det, "%s (offline)", g5::nomeModo(est.modo)); guardarEvento("modo", det); }
+  }
+  if (strcmp(condAtual, condAnt) != 0) {
+    bool primeira = strcmp(condAnt, "indefinida") == 0;
+    condAnt = condAtual;
+    if (semBroker && !primeira) { snprintf(det, sizeof det, "%s (offline)", condAtual); guardarEvento("condicao", det); }
+  }
+}
+
+void enviarHistorico(uint32_t agora) {
+#if HISTORICO_OFFLINE
+  if (!mqtt.connected() || (hlQtd == 0 && heQtd == 0)) return;
+  time_t agoraEpoch = time(nullptr);
+  if (agoraEpoch < 1700000000) return;
+  if (!g5::passou(agora, ultEnvioHist, HIST_ENVIO_MS)) return;
+  ultEnvioHist = agora;
+
+  char ts[32], buf[250], topico[96];
+  struct tm info;
+  if (heQtd > 0) {
+    EventoOff& e = histEventos[heIni];
+    time_t quando = agoraEpoch - (time_t)((agora - e.ms) / 1000UL);
+    localtime_r(&quando, &info);
+    g5::formatarTs(ts, sizeof ts, info);
+    g5::jsonEvento(buf, sizeof buf, DEVICE_ID, ts, e.tipo, e.detalhe);
+    if (!mqtt.publish(T_EVENTO, buf, false)) return;
+    heIni = (heIni + 1) % HIST_MAX_EVENTOS;
+    heQtd--;
+  } else {
+    Amostra& a = histLeituras[hlIni];
+    time_t quando = agoraEpoch - (time_t)((agora - a.ms) / 1000UL);
+    localtime_r(&quando, &info);
+    g5::formatarTs(ts, sizeof ts, info);
+    struct { const char* g; float v; const char* u; } itens[4] = {
+      {"temperatura", a.t, "°C"}, {"umidade_ar", a.u, "%"}, {"umidade_solo", a.solo, "%"}, {"luminosidade", a.luz, "%"}};
+    for (auto& it : itens) {
+      if (isnan(it.v)) continue;
+      g5::jsonTelemetria(buf, sizeof buf, DEVICE_ID, ts, it.g, it.v, it.u);
+      snprintf(topico, sizeof topico, "%s/%s", T_TELE, it.g);
+      if (!mqtt.publish(topico, buf, false)) return;
+    }
+    hlIni = (hlIni + 1) % HIST_MAX_LEITURAS;
+    hlQtd--;
+  }
+  if (hlQtd == 0 && heQtd == 0) Serial.println("[historico] reenvio concluido: backend com o historico completo");
+#endif
+}
+
 void releInit() {
 #if RELE_ATIVO_BAIXO
-  pinMode(PIN_RELE, INPUT);                // pino solto = desligado (nunca HIGH de 3,3 V)
+  pinMode(PIN_RELE, INPUT);
 #else
   digitalWrite(PIN_RELE, LOW);
   pinMode(PIN_RELE, OUTPUT);
@@ -451,29 +525,68 @@ void releInit() {
 
 void releFisico(bool ligar) {
 #if RELE_ATIVO_BAIXO
-  if (ligar) { digitalWrite(PIN_RELE, LOW); pinMode(PIN_RELE, OUTPUT); digitalWrite(PIN_RELE, LOW); }  // GND = liga
-  else       { pinMode(PIN_RELE, INPUT); }                                                           // solto = desliga
+  if (ligar) { digitalWrite(PIN_RELE, LOW); pinMode(PIN_RELE, OUTPUT); digitalWrite(PIN_RELE, LOW); }
+  else       { pinMode(PIN_RELE, INPUT); }
 #else
   digitalWrite(PIN_RELE, ligar ? HIGH : LOW);
 #endif
 }
 
+bool padraoLed(uint32_t agora) {
+  if (est.led) return true;
+  if (est.bombaAcionada(agora)) return true;
+  if (est.modo == g5::SEGURO) return (agora / 150) % 2;
+  if (alertaLocal) return true;
+  if (!mqtt.connected()) return (agora / 1000) % 2;
+  return (agora % 5000) < 80;
+}
+
+bool padraoBuzzer(uint32_t agora) {
+  if (est.buzzer) return true;
+  int32_t t = est.msNoAviso(agora);
+  return t >= 0 && (t < 150 || (t >= 300 && t < 450));
+}
+
 void aplicarSaidas() {
-  bool releLigar = est.bomba;
+  uint32_t agora = millis();
+  bool releLigar = est.bombaAcionada(agora);
   if (releLigar != releAplicado) {
     releFisico(releLigar);
     releAplicado = releLigar;
     Serial.printf("[bomba] %s\n", releLigar ? "LIGADA" : "desligada");
   }
-  bool ledFisico = est.led || (alertaLocal && ledPisca);
+  bool ledFisico = padraoLed(agora);
   if (ledFisico != ledAplicado) { digitalWrite(PIN_LED, ledFisico ? HIGH : LOW); ledAplicado = ledFisico; }
-  if (est.buzzer != buzzerAplicado) {
-    if (est.buzzer) tone(PIN_BUZZER, 1000); else { noTone(PIN_BUZZER); digitalWrite(PIN_BUZZER, LOW); }
-    buzzerAplicado = est.buzzer;
+  bool buzzerFisico = padraoBuzzer(agora);
+  if (buzzerFisico != buzzerAplicado) {
+    if (buzzerFisico) tone(PIN_BUZZER, 1000); else { noTone(PIN_BUZZER); digitalWrite(PIN_BUZZER, LOW); }
+    buzzerAplicado = buzzerFisico;
   }
 }
 
-// ------------------------------------------------------------ MQTT
+void publicarEvento(const char* tipo, const char* detalhe) {
+  if (!mqtt.connected()) { guardarEvento(tipo, detalhe); return; }
+  char ts[32], buf[250];
+  agoraTs(ts, sizeof ts);
+  g5::jsonEvento(buf, sizeof buf, DEVICE_ID, ts, tipo, detalhe);
+  pub(T_EVENTO, buf, false);
+}
+
+void lerBotao(uint32_t agora) {
+  static bool apertadoAnt = false;
+  static uint32_t ultMudanca = 0;
+  bool apertado = digitalRead(PIN_BOTAO) == LOW;
+  if (apertado == apertadoAnt || !g5::passou(agora, ultMudanca, 50)) return;
+  apertadoAnt = apertado;
+  ultMudanca = agora;
+  if (!apertado) return;
+  bool apagou = est.silenciar();
+  Serial.printf("[botao] alarme silenciado%s\n", apagou ? " (LED/buzzer desligados)" : "");
+  aplicarSaidas();
+  publicarEvento("alarme", "silenciado no botao da placa");
+  if (apagou) publicarEstado();
+}
+
 void aoReceber(char* topico, byte* payload, unsigned int tam) {
   if (strcmp(topico, T_COMANDO) != 0) return;
   Serial.printf("[cmd] %.*s\n", (int)tam, (const char*)payload);
@@ -490,9 +603,11 @@ void aoReceber(char* topico, byte* payload, unsigned int tam) {
     prefs.putInt("limiar", est.cfg.limiarSoloSecoPct);
     prefs.putInt("intervalo", est.cfg.intervaloMinS);
     prefs.putInt("durmax", est.cfg.duracaoMaxS);
+    prefs.putInt("bloq", est.cfg.bombaBloqueada);
+    if (est.cfg.bombaBloqueada) Serial.println("[cmd] bomba BLOQUEADA pelo backend (reservatorio vazio?)");
   }
   publicarConfirmacao(r.commandId, "executado", "ok", nullptr);
-  publicarEstado();  // o backend promove executado -> confirmado ao ver este estado
+  publicarEstado();
 }
 
 void tentarMqtt(uint32_t agora) {
@@ -502,7 +617,7 @@ void tentarMqtt(uint32_t agora) {
   char offline[80];
   g5::jsonStatus(offline, sizeof offline, DEVICE_ID, false);
   Serial.printf("[mqtt] conectando em %s:%d ...\n", MQTT_HOST, MQTT_PORT);
-  if (!mqtt.connect(clientId, nullptr, nullptr, T_STATUS, 1, true, offline)) {  // LWT QoS1 retain
+  if (!mqtt.connect(clientId, nullptr, nullptr, T_STATUS, 1, true, offline)) {
     Serial.printf("[mqtt] falhou rc=%d\n", mqtt.state());
     return;
   }
@@ -512,9 +627,11 @@ void tentarMqtt(uint32_t agora) {
   g5::jsonStatus(online, sizeof online, DEVICE_ID, true);
   pub(T_STATUS, online, true);
   publicarEstado();
+#if HISTORICO_OFFLINE
+  if (hlQtd || heQtd) Serial.printf("[historico] reenviando %d leitura(s) e %d evento(s) guardados offline\n", hlQtd, heQtd);
+#endif
 }
 
-// ------------------------------------------------------------ sensores
 int lerAdc(int pino) {
   long soma = 0;
   for (int i = 0; i < 8; i++) soma += analogRead(pino);
@@ -537,7 +654,7 @@ void lerEPublicar() {
   bool mudouCond = strcmp(condAntes, condAtual) != 0;
   Serial.printf("[sensores] T=%.1f UR=%.1f solo=%.1f%% (raw %d%s) luz=%.1f%% cond=%s modo=%s\n", t, u, solo, rawSolo, soloValido ? "" : " INVALIDO", luz, condAtual, g5::nomeModo(est.modo));
 
-  // valor invalido vai como null: o backend registra falha_sensor e nao grava a leitura
+  if (!mqtt.connected()) guardarLeitura(t, u, solo, luz, millis());
   publicarTelemetria("temperatura", t, "°C");
   publicarTelemetria("umidade_ar", u, "%");
   publicarTelemetria("umidade_solo", solo, "%");
@@ -551,17 +668,14 @@ void lerEPublicar() {
   if (mudouModo || mudouCond || irrigou) { aplicarSaidas(); publicarEstado(); }
 }
 
-void regraLocal(uint32_t agora) {
+void regraLocal() {
   bool deve = !mqtt.connected() && (strcmp(condAtual, "inadequado") == 0 || est.modo == g5::SEGURO);
   if (deve != alertaLocal) {
     alertaLocal = deve;
-    ledPisca = false;
-    Serial.printf("[regra local] alerta %s\n", deve ? "LIGADO (sem broker)" : "desligado");
+    Serial.printf("[regra local] alerta %s\n", deve ? "LIGADO (sem broker): LED aceso" : "desligado");
   }
-  if (alertaLocal && g5::passou(agora, ultPisca, PISCA_ALERTA_MS)) { ultPisca = agora; ledPisca = !ledPisca; }
 }
 
-// ------------------------------------------------------------ teste pela serial (Wokwi)
 void lerSerial() {
   static String linha;
   while (Serial.available()) {
@@ -569,17 +683,16 @@ void lerSerial() {
     if (c != '\n' && c != '\r') { linha += c; continue; }
     linha.trim();
     if (linha == "falha") { falhaForcada = !falhaForcada; Serial.printf("[teste] falha do DHT %s\n", falhaForcada ? "FORCADA" : "removida"); }
-    else if (linha == "estado") { Serial.printf("[estado] modo=%s bomba=%d led=%d buzzer=%d limiar=%d intervalo=%d durmax=%d\n", g5::nomeModo(est.modo), est.bomba, est.led, est.buzzer, est.cfg.limiarSoloSecoPct, est.cfg.intervaloMinS, est.cfg.duracaoMaxS); }
+    else if (linha == "estado") { Serial.printf("[estado] modo=%s bomba=%d led=%d buzzer=%d limiar=%d intervalo=%d durmax=%d bloqueada=%d\n", g5::nomeModo(est.modo), est.bomba, est.led, est.buzzer, est.cfg.limiarSoloSecoPct, est.cfg.intervaloMinS, est.cfg.duracaoMaxS, est.cfg.bombaBloqueada); }
     else if (linha.length()) Serial.println("[teste] comandos: falha | estado");
     linha = "";
   }
 }
 
-// ------------------------------------------------------------ setup / loop
 void setup() {
-  // rele ANTES de tudo: nivel de repouso (desligado) para a bomba nunca ligar no boot
   releInit();
   pinMode(PIN_LED, OUTPUT); digitalWrite(PIN_LED, LOW);
+  pinMode(PIN_BOTAO, INPUT_PULLUP);
   pinMode(PIN_BUZZER, OUTPUT); digitalWrite(PIN_BUZZER, LOW);
   Serial.begin(115200);
   analogReadResolution(12);
@@ -591,19 +704,22 @@ void setup() {
   est.cfg.limiarSoloSecoPct = prefs.getInt("limiar", est.cfg.limiarSoloSecoPct);
   est.cfg.intervaloMinS = prefs.getInt("intervalo", est.cfg.intervaloMinS);
   est.cfg.duracaoMaxS = prefs.getInt("durmax", est.cfg.duracaoMaxS);
+  est.cfg.bombaBloqueada = prefs.getInt("bloq", 0);
+  est.avisoBombaMs = AVISO_BOMBA_MS;
 
   snprintf(T_STATUS, sizeof T_STATUS, "%s/%s/status", MQTT_PREFIX, DEVICE_ID);
   snprintf(T_ESTADO, sizeof T_ESTADO, "%s/%s/estado", MQTT_PREFIX, DEVICE_ID);
   snprintf(T_COMANDO, sizeof T_COMANDO, "%s/%s/comando", MQTT_PREFIX, DEVICE_ID);
   snprintf(T_CONF, sizeof T_CONF, "%s/%s/confirmacao", MQTT_PREFIX, DEVICE_ID);
   snprintf(T_TELE, sizeof T_TELE, "%s/%s/telemetria", MQTT_PREFIX, DEVICE_ID);
+  snprintf(T_EVENTO, sizeof T_EVENTO, "%s/%s/evento", MQTT_PREFIX, DEVICE_ID);
   snprintf(clientId, sizeof clientId, "%s-%04X", DEVICE_ID, (uint16_t)(ESP.getEfuseMac() >> 32));
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setBufferSize(768);  // estado com "recursos" passa de 300 bytes
+  mqtt.setBufferSize(768);
   mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
   mqtt.setSocketTimeout(3);
   mqtt.setCallback(aoReceber);
@@ -621,9 +737,9 @@ void loop() {
     #if USAR_OTA
       ArduinoOTA.setHostname(DEVICE_ID);
       #ifdef OTA_PASSWORD
-        ArduinoOTA.setPassword(OTA_PASSWORD);  // sem senha qualquer um na rede grava firmware
+        ArduinoOTA.setPassword(OTA_PASSWORD);
       #endif
-      ArduinoOTA.onStart([]() { est.bomba = false; aplicarSaidas(); });  // bomba desligada durante a atualizacao
+      ArduinoOTA.onStart([]() { est.bomba = false; aplicarSaidas(); });
       ArduinoOTA.begin();
     #endif
     Serial.printf("[wifi] conectado, IP %s\n", WiFi.localIP().toString().c_str());
@@ -633,15 +749,13 @@ void loop() {
     if (ntpIniciado) ArduinoOTA.handle();
   #endif
 
-  // tempo da bomba ANTES de tentarMqtt: com o broker fora, mqtt.connect() trava ~3 s e a bomba
-  // passaria desse tempo do limite de duracao
   if (est.tick(agora)) { aplicarSaidas(); publicarEstado(); }
   tentarMqtt(agora);
   if (mqtt.connected()) mqtt.loop();
-  agora = millis();  // o mqtt.loop() pode ter aceitado um comando: nao usar a hora lida antes dele
+  agora = millis();
 
   if (est.tick(agora)) { aplicarSaidas(); publicarEstado(); }
-  regraLocal(agora);
+  regraLocal();
   aplicarSaidas();
 
   if (primeiraLeitura || g5::passou(agora, ultLeitura, PERIODO_TELEMETRIA_MS)) {
@@ -650,5 +764,8 @@ void loop() {
     lerEPublicar();
   }
   if (g5::passou(agora, ultEstado, PERIODO_ESTADO_MS)) { ultEstado = agora; publicarEstado(); }
+  lerBotao(agora);
+  anotarMudancas();
+  enviarHistorico(agora);
   lerSerial();
 }

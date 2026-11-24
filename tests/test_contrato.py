@@ -108,14 +108,15 @@ def test_confirmacao_invalida(dados):
         contrato.validar_confirmacao(dados)
 
 
-def test_catalogo_de_motivos_tem_os_8_do_contrato():
+def test_catalogo_de_motivos_tem_os_9_do_contrato():
     assert contrato.MOTIVOS == {
         "intertravamento_intervalo", "intertravamento_duracao", "modo_seguro", "comando_duplicado",
         "alvo_invalido", "valor_fora_da_faixa", "json_invalido", "versao_nao_suportada",
+        "bomba_bloqueada",
     }
 
 
-@pytest.mark.parametrize("alvo,padrao", [("bomba", 5), ("led", 8), ("buzzer", 8)])
+@pytest.mark.parametrize("alvo,padrao", [("bomba", 3), ("led", 8), ("buzzer", 8)])
 def test_duracao_padrao(alvo, padrao):
     assert contrato.validar_comando(alvo, "on", None, None)["duracaoS"] == padrao
 
@@ -169,7 +170,6 @@ def test_formato_do_command_id():
 
 
 def test_config_inteiro_vindo_como_float_vira_int():
-    # o firmware usa is<int>(): 35.0 precisa sair como 35 no JSON
     c = contrato.validar_comando("config", "set", None, {"limiarSoloSecoPct": 35.0})
     assert c["parametros"] == {"limiarSoloSecoPct": 35}
     assert isinstance(c["parametros"]["limiarSoloSecoPct"], int)

@@ -9,10 +9,7 @@ RAIZ = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RAIZ / "backend"))
 
 os.environ.setdefault("JWT_SECRET", "segredo-ficticio-de-teste-com-mais-de-32-caracteres")
-for nome in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "ALERTA_DESTINO"):
-    os.environ.pop(nome, None)
-
-from app import auth, db, notify
+from app import auth, db
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
 
@@ -62,14 +59,6 @@ def banco(_engine):
                 {"e": email, "h": auth.hash_senha(senha), "p": papel},
             )
     return _engine
-
-
-@pytest.fixture(autouse=True)
-def email_falso(monkeypatch):
-    enviados = []
-    monkeypatch.setattr(notify, "sincrono", True)
-    monkeypatch.setattr(notify, "enviar_smtp", lambda destino, assunto, corpo: enviados.append((destino, assunto)))
-    return enviados
 
 
 @pytest.fixture

@@ -1,8 +1,6 @@
 "use strict";
-// Interface do MACP: HTML + JS puro, sem build. Todo dado externo entra com textContent (sem innerHTML).
 const $ = (id) => document.getElementById(id);
 
-// ================================================================ vocabulario
 const GRANDEZAS = {
   temperatura: { nome: "Temperatura", un: "°C", icone: "termometro" },
   umidade_ar: { nome: "Umidade do ar", un: "%", icone: "nuvem" },
@@ -10,7 +8,7 @@ const GRANDEZAS = {
   luminosidade: { nome: "Luminosidade", un: "%", icone: "sol" },
 };
 const ATUADORES = { bomba: "Bomba", led: "LED", buzzer: "Buzzer" };
-const FEMININO = new Set(["bomba"]); // "Bomba ligada" x "LED ligado"
+const FEMININO = new Set(["bomba"]);
 const DUR_MAX = { bomba: 15, led: 60, buzzer: 60 };
 const TODOS = { sensores: Object.keys(GRANDEZAS), atuadores: Object.keys(ATUADORES) };
 const CONDICOES = {
@@ -37,6 +35,9 @@ const MOTIVOS = {
   valor_fora_da_faixa: "Valor fora da faixa permitida.",
   json_invalido: "Mensagem inválida.",
   versao_nao_suportada: "Versão do contrato não suportada pela estação.",
+  bomba_bloqueada: "Bomba bloqueada: reservatório vazio? Reabasteça e clique em \"Reabasteci\" no alerta.",
+  alerta_automatico: "Este alerta se resolve sozinho quando a causa some.",
+  alerta_ja_resolvido: "Este alerta já foi resolvido.",
   broker_indisponivel: "Broker MQTT fora do ar: o comando não saiu.",
   dispositivo_offline: "A estação está offline.",
   dispositivo_desconhecido: "Estação desconhecida.",
@@ -47,25 +48,25 @@ const EVENTOS = {
   status: "Conexão", falha_sensor: "Falha de sensor", mensagem_invalida: "Mensagem inválida",
   firmware_atualizado: "Firmware atualizado", regra_alterada: "Regra alterada", comando_falhou: "Comando falhou",
   comando_expirado: "Comando sem resposta", bomba: "Bomba", recursos: "Equipamento da estação",
+  modo: "Modo", condicao: "Condição", alarme: "Alarme", reservatorio: "Reservatório",
 };
-const ALERTAS = { dispositivo_offline: "Estação offline", solo_seco: "Solo seco" };
+const ALERTAS = { dispositivo_offline: "Estação offline", solo_seco: "Solo seco", reservatorio_vazio: "Reservatório vazio?" };
 
-const SEM_DADOS_S = 30; // sem mensagem ha mais que isso: "sem dados" mesmo que o status diga online
-const LIMITE_MS = 8000; // tempo maximo esperando o backend
+const SEM_DADOS_S = 30;
+const LIMITE_MS = 8000;
 const SEM_CONEXAO = "Não foi possível conectar ao servidor";
 
 let sessao = null, dispositivos = [], regras = [], charts = {}, timers = [];
 let listasProntas = false, atualizando = false, ultimaOk = null;
-let alertasVistos = null;          // ids ja mostrados (null = primeira carga, sem toast)
-const assinaturas = {};            // estacao -> resumo do ultimo desenho do cartao
-const ocupado = new Set();         // botoes de acao rapida esperando resposta
+let alertasVistos = null;
+const assinaturas = {};
+const ocupado = new Set();
 
 const recursosDe = (id) => (dispositivos.find((d) => d.id === id) || {}).recursos || TODOS;
 const nomeDe = (id) => (dispositivos.find((d) => d.id === id) || {}).nome || id;
 const temBomba = (rec) => rec.atuadores.includes("bomba");
 const admin = () => sessao && sessao.papel === "admin";
 
-// ================================================================ utilitarios
 function guardar(k, v) { try { v == null ? sessionStorage.removeItem(k) : sessionStorage.setItem(k, v); } catch (e) {} }
 function ler(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
 
@@ -77,7 +78,6 @@ async function buscar(url, opts = {}) {
   finally { clearTimeout(t); }
 }
 
-// erro da API vem como {codigo, mensagem}; validacao do proprio FastAPI (422) vem como {detail: [...]}
 function textoErro(corpo, status) {
   if (corpo.codigo === "valor_fora_da_faixa" && corpo.mensagem) return `Valor inválido: ${corpo.mensagem}.`;
   if (corpo.codigo && MOTIVOS[corpo.codigo]) return MOTIVOS[corpo.codigo];
@@ -109,7 +109,6 @@ function badge(texto, tipo, ponto) {
   b.appendChild(document.createTextNode(texto));
   return b;
 }
-// o backend manda microssegundos (.123456); corta em milissegundos para qualquer navegador entender
 function lerData(iso) { return new Date(String(iso).replace(/(\.\d{3})\d+/, "$1")); }
 function hora(iso) { return iso ? lerData(iso).toLocaleTimeString("pt-BR") : "nunca"; }
 function dataHora(iso) { return iso ? lerData(iso).toLocaleString("pt-BR") : ""; }
@@ -119,7 +118,6 @@ function atras(iso) {
   if (s < 5) return "agora";
   return s < 60 ? `há ${s} s` : s < 3600 ? `há ${Math.round(s / 60)} min` : s < 86400 ? `há ${Math.round(s / 3600)} h` : `há ${Math.round(s / 86400)} d`;
 }
-// texto relativo que se atualiza sozinho (o relogio de 1 s reescreve todo [data-ts])
 function tempo(iso, prefixo = "", classe = "tempo") {
   const s = el("span", prefixo + atras(iso), classe);
   if (iso) { s.dataset.ts = iso; s.dataset.prefixo = prefixo; s.title = dataHora(iso); }
@@ -153,7 +151,6 @@ function toast(texto, tipo = "", ms = 5000) {
   setTimeout(() => t.remove(), ms);
 }
 
-// ================================================================ login
 $("ver-senha").addEventListener("click", () => {
   const i = $("login-senha"), mostrar = i.type === "password";
   i.type = mostrar ? "text" : "password";
@@ -189,7 +186,6 @@ function sair(aviso) {
   $("login-email").focus();
 }
 
-// ================================================================ inicio
 async function iniciar() {
   $("tela-login").hidden = true; $("tela-app").hidden = false;
   const u = $("usuario"); u.textContent = "";
@@ -216,7 +212,6 @@ async function carregarListas() {
   atualizarPainel();
 }
 
-// ================================================================ ciclo de 3 s
 async function atualizar() {
   if (atualizando) return;
   atualizando = true;
@@ -252,12 +247,10 @@ async function atualizarDados() {
     opcoesAlvo(); textosRegra();
     relogio();
   } catch (err) {
-    // sem resposta: os tempos relativos continuam correndo pelo relogio; o cartao vira "sem dados" sozinho
     if (dispositivos.length) cartoes(dispositivos);
   }
 }
 
-// ================================================================ resumo (KPIs)
 function kpis(lista, alertas, comandos) {
   const raiz = $("kpis"); raiz.textContent = "";
   const caixa = (rot, valor, extra, classe) => {
@@ -275,13 +268,11 @@ function kpis(lista, alertas, comandos) {
   caixa("Comandos em andamento", String(pend));
 }
 
-// ================================================================ cartoes das estacoes
 function limiarDe(d) {
   const r = regras.find((x) => x.dispositivo_id === d.id);
   return Number(r?.limiar ?? d.ultimo_estado?.limiarSoloSecoPct ?? 30);
 }
 
-// Le cada leitura contra as mesmas faixas do firmware e diz o que esta errado, em portugues
 function avaliar(d) {
   const rec = d.recursos || TODOS, l = d.leituras || {}, limiar = limiarDe(d);
   const sensores = {}, motivos = [];
@@ -317,7 +308,6 @@ function cartoes(lista) {
   raiz.querySelectorAll(".esqueleto").forEach((n) => n.remove());
   if (!lista.length) { raiz.textContent = ""; raiz.appendChild(el("p", "Nenhuma estação cadastrada.", "mudo")); return; }
   for (const d of lista) {
-    // so redesenha se algo visivel mudou: um clique num botao do cartao nao se perde no meio do redesenho
     const assin = JSON.stringify([d.online, situacaoConexao(d), d.modo, d.condicao, d.fw, d.recursos, d.ultimo_estado,
       Object.fromEntries(Object.entries(d.leituras || {}).map(([g, x]) => [g, x.valor])), limiarDe(d), admin(),
       [...ocupado].filter((k) => k.startsWith(d.id + ":"))]);
@@ -334,15 +324,14 @@ function cartao(d) {
   const card = el("article", null, "card estacao" + (conn === "offline" ? " off" : ""));
   card.dataset.estacao = d.id;
 
-  // cabecalho
   const cab = el("div", null, "cab");
   const h = el("h3", d.nome); h.appendChild(el("small", d.id)); cab.appendChild(h);
   if (!temBomba(rec)) { const b = badge("sem bomba", ""); b.title = "Com o solo seco, esta estação avisa por LED e buzzer"; cab.appendChild(b); }
+  if (temBomba(rec) && Number(est.bombaBloqueada) === 1) { const b = badge("bomba bloqueada", "bad"); b.title = "Reservatório vazio? Reabasteça e clique em \"Reabasteci\" no alerta"; cab.appendChild(b); }
   if (d.modo && MODOS[d.modo] && d.modo !== "automatico") { const m = MODOS[d.modo]; const b = badge(m.nome, m.tipo); b.title = m.dica; cab.appendChild(b); }
   cab.appendChild(conn === "online" ? badge("online", "ok", "vivo") : conn === "sem_dados" ? badge("sem dados", "warn", true) : badge("offline", "bad", true));
   card.appendChild(cab);
 
-  // condicao, com o porque
   const cond = el("div", null, "condicao");
   if (conn === "offline") {
     cond.appendChild(el("b", "Estação desconectada"));
@@ -359,7 +348,6 @@ function cartao(d) {
   }
   card.appendChild(cond);
 
-  // leituras
   const grade = el("div", null, "leituras");
   for (const g of rec.sensores) {
     const info = GRANDEZAS[g], l = (d.leituras || {})[g], st = av.sensores[g]?.status;
@@ -374,7 +362,6 @@ function cartao(d) {
   }
   card.appendChild(grade);
 
-  // atuadores
   const at = el("div", null, "atuadores");
   for (const n of rec.atuadores) {
     const ligado = est[n] === "on";
@@ -383,7 +370,6 @@ function cartao(d) {
   }
   card.appendChild(at);
 
-  // acoes rapidas (admin)
   if (admin()) {
     const acoes = el("div", null, "acoes");
     const podeAgir = d.online;
@@ -402,7 +388,6 @@ function cartao(d) {
     card.appendChild(acoes);
   }
 
-  // rodape
   const rod = el("div", null, "rodape");
   rod.appendChild(tempo(d.ultimo_contato, "Último contato ", ""));
   if (d.fw) rod.appendChild(el("span", "firmware " + d.fw));
@@ -433,9 +418,7 @@ async function acaoRapida(d, chave, passos) {
   }
 }
 
-// ================================================================ ciclo de vida de um comando
 const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
-// consulta o comando ate chegar num estado final (ou desistir); chama aoMudar a cada mudanca
 async function seguir(id, aoMudar) {
   let ultimo = null, c = null;
   for (let i = 0; i < 40 && sessao; i++) {
@@ -462,7 +445,6 @@ function desenharEtapas(c) {
   const ol = el("ol", null, "etapas");
   const ordem = ["enviado", "recebido", "executado", "confirmado"];
   const idx = ordem.indexOf(c.estado);
-  // onde parou quando deu errado: rejeicao e falta de resposta sao na recepcao; broker fora, no envio
   const erroEm = idx >= 0 ? -1 : c.estado === "falhou" ? (c.motivo === "broker_indisponivel" ? 0 : c.executado_em ? 3 : 2) : 1;
   ordem.forEach((e, i) => {
     let cls = "", rotulo = SITUACOES[e][0];
@@ -474,7 +456,6 @@ function desenharEtapas(c) {
   box.appendChild(ol);
 }
 
-// ================================================================ alertas, comandos, eventos
 function listaAlertas(lista) {
   const ul = $("alertas"); ul.textContent = "";
   if (!lista.length) ul.appendChild(el("li", "Nenhum alerta ativo. Tudo em ordem.", "vazio"));
@@ -484,9 +465,21 @@ function listaAlertas(lista) {
     const msg = (a.mensagem || "").replace(a.dispositivo_id + " ", "").replace("umidade_solo", "umidade do solo");
     li.appendChild(el("span", `${nomeDe(a.dispositivo_id)}${msg ? " — " + msg : ""}`));
     li.appendChild(tempo(a.aberto_em, "aberto "));
+    if (a.tipo === "reservatorio_vazio" && admin()) {
+      const b = el("button", "Reabasteci", "sec");
+      b.title = "Resolve o alerta e libera a bomba da estação";
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          const r = await api(`/alertas/${a.id}/resolver`, { method: "POST" });
+          toast(r.desbloqueioEnviado ? "Bomba liberada na estação." : "Alerta resolvido. A bomba será liberada quando a estação voltar.", "ok");
+          atualizarDados();
+        } catch (err) { toast(err.message, "bad"); b.disabled = false; }
+      };
+      li.appendChild(b);
+    }
     ul.appendChild(li);
   }
-  // alerta novo enquanto a pessoa olha a tela: avisa em toast (nao na primeira carga)
   if (alertasVistos) for (const a of lista) if (!alertasVistos.has(a.id)) toast(`${ALERTAS[a.tipo] || a.tipo}: ${nomeDe(a.dispositivo_id)}`, "bad", 8000);
   alertasVistos = new Set(lista.map((a) => a.id));
 }
@@ -509,7 +502,12 @@ function tabelaComandos(lista) {
 
 function textoEvento(e) {
   if (e.tipo === "status") return e.detalhe === "online" ? "conectou ao broker" : "desconectou (LWT)";
-  if (e.tipo === "bomba") return e.detalhe?.startsWith("on") ? "bomba ligou" : "bomba desligou";
+  const offline = e.detalhe?.includes("offline") ? " (sem conexão, enviado depois)" : "";
+  if (e.tipo === "bomba") return (e.detalhe?.startsWith("on") ? "bomba ligou" : "bomba desligou") + offline;
+  if (e.tipo === "modo") return `modo ${(MODOS[e.detalhe?.split(" ")[0]]?.nome || e.detalhe || "").toLowerCase()}${offline}`;
+  if (e.tipo === "condicao") return `condição ${e.detalhe?.split(" ")[0] || ""}${offline}`;
+  if (e.tipo === "alarme") return `alarme silenciado no botão da placa${offline}`;
+  if (e.tipo === "reservatorio") return `reservatório ${e.detalhe || ""}: bomba liberada`;
   if (e.tipo === "recursos") {
     const lista = (e.detalhe || "").replace("atuadores: ", "").split(", ").map((a) => ATUADORES[a] || a);
     return `informou os atuadores: ${lista.join(", ")}${lista.includes("Bomba") ? "" : " (sem bomba)"}`;
@@ -523,7 +521,7 @@ function textoEvento(e) {
 function listaEventos(lista) {
   const ul = $("eventos"); ul.textContent = "";
   if (!lista.length) ul.appendChild(el("li", "Nenhum evento registrado.", "vazio"));
-  const tipo = { status: "", falha_sensor: "bad", mensagem_invalida: "warn", comando_falhou: "bad", comando_expirado: "warn", bomba: "acc" };
+  const tipo = { status: "", falha_sensor: "bad", mensagem_invalida: "warn", comando_falhou: "bad", comando_expirado: "warn", bomba: "acc", modo: "warn", condicao: "", alarme: "", reservatorio: "ok" };
   for (const e of lista) {
     const li = el("li");
     li.appendChild(badge(EVENTOS[e.tipo] || e.tipo, tipo[e.tipo] ?? ""));
@@ -533,11 +531,10 @@ function listaEventos(lista) {
   }
 }
 
-// ================================================================ formulario de comando
 const acaoEscolhida = () => (document.querySelector('input[name="cmd-acao"]:checked') || {}).value || "on";
 function opcoesAlvo() {
   const s = $("cmd-alvo"), atual = s.value, lista = recursosDe($("cmd-disp").value).atuadores;
-  if ([...s.options].map((o) => o.value).join() === lista.join()) return; // nada mudou: nao mexe na escolha
+  if ([...s.options].map((o) => o.value).join() === lista.join()) return;
   s.textContent = "";
   for (const a of lista) { const o = el("option", ATUADORES[a]); o.value = a; s.appendChild(o); }
   if (lista.includes(atual)) s.value = atual;
@@ -570,12 +567,11 @@ $("form-comando").addEventListener("submit", async (ev) => {
     toast(`${descricao(fim)}: ${SITUACOES[fim.estado]?.[0] || fim.estado}`, fim.estado === "confirmado" ? "ok" : "bad");
   } catch (e) {
     if (!sessao) return;
-    const c = e.corpo && e.corpo.comando; // 503 broker_indisponivel: o comando foi gravado como falhou
+    const c = e.corpo && e.corpo.comando;
     if (c) desenharEtapas(c); else toast(`Comando não enviado: ${e.message}`, "bad", 8000);
   } finally { botao.disabled = false; atualizar(); }
 });
 
-// ================================================================ painel analitico
 $("pn-disp").addEventListener("change", atualizarPainel);
 $("pn-horas").addEventListener("change", atualizarPainel);
 const cor = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -585,7 +581,7 @@ async function atualizarPainel() {
   let p;
   try { p = await api(`/painel?dispositivo_id=${encodeURIComponent(disp)}&horas=${horas}`); }
   catch (e) { return; }
-  if (disp !== $("pn-disp").value || horas !== $("pn-horas").value) return; // a selecao mudou durante a espera
+  if (disp !== $("pn-disp").value || horas !== $("pn-horas").value) return;
   const rec = p.recursos || TODOS;
   const resumo = $("resumo"); resumo.textContent = "";
   const caixa = (t, v) => { const b = el("div", null, "leit"); b.appendChild(el("span", t, "rot")); b.appendChild(el("b", v)); resumo.appendChild(b); };
@@ -629,7 +625,6 @@ async function atualizarPainel() {
   }
 }
 
-// ================================================================ regra automatica
 function preencherRegra() {
   const r = regras.find((x) => x.dispositivo_id === $("rg-disp").value) || {};
   $("rg-limiar").value = r.limiar ?? ""; $("rg-janela").value = r.janela_min ?? ""; $("rg-intervalo").value = r.intervalo_min_s ?? "";
@@ -655,13 +650,12 @@ $("form-regra").addEventListener("submit", async (ev) => {
       limiar: Number($("rg-limiar").value), janela_min: Number($("rg-janela").value),
       intervalo_min_s: Number($("rg-intervalo").value), duracao_s: Number($("rg-dur").value), ativa: $("rg-ativa").checked }) });
     toast(`Regra de ${nomeDe($("rg-disp").value)} salva.`, "ok");
-    try { regras = await api("/regras"); } catch (e) { /* o formulario ja mostra o que foi salvo */ }
+    try { regras = await api("/regras"); } catch (e) {  }
     preencherRegra(); cartoes(dispositivos); atualizarPainel();
   } catch (e) {
     if (sessao) msg.textContent = "Não foi possível salvar: " + e.message;
   } finally { botao.disabled = !admin(); botao.textContent = "Salvar regra"; }
 });
 
-// ================================================================ partida
 const salva = ler("macp");
 if (salva) { try { sessao = JSON.parse(salva); iniciar(); } catch (e) { sair(); } }

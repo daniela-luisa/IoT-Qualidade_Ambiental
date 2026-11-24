@@ -9,7 +9,8 @@ from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
 ALVOS = {"bomba": (1, 15), "led": (1, 60), "buzzer": (1, 60)}
-FAIXAS_CONFIG = {"limiarSoloSecoPct": (10, 80), "intervaloMinS": (30, 3600), "duracaoMaxS": (1, 15)}
+FAIXAS_CONFIG = {"limiarSoloSecoPct": (10, 80), "intervaloMinS": (30, 3600), "duracaoMaxS": (1, 15),
+                 "bombaBloqueada": (0, 1)}
 
 
 def agora_iso():
@@ -27,7 +28,8 @@ class Estacao:
         self.falhar_sensor = args.falha_sensor
         self.tem_bomba = not args.sem_bomba
         self.atuadores = {"bomba": "off", "led": "off", "buzzer": "off"} if self.tem_bomba else {"led": "off", "buzzer": "off"}
-        self.config = {"limiarSoloSecoPct": 30, "intervaloMinS": args.intervalo_min_bomba, "duracaoMaxS": 15}
+        self.config = {"limiarSoloSecoPct": 30, "intervaloMinS": args.intervalo_min_bomba, "duracaoMaxS": 15,
+                       "bombaBloqueada": 0}
         self.ultima_irrigacao = 0.0
         self.vistos: set[str] = set()
         self.solo = 20.0 if args.seco else 55.0
@@ -59,7 +61,9 @@ class Estacao:
         recursos = {"sensores": ["temperatura", "umidade_ar", "umidade_solo", "luminosidade"],
                     "atuadores": list(self.atuadores)}
         self.pub("estado", {"ts": agora_iso(), "modo": self.modo, "condicao": self.condicao(),
-                            **self.atuadores, "fw": self.fw, "recursos": recursos}, qos=1, retain=True)
+                            **self.atuadores, "fw": self.fw, "recursos": recursos,
+                            **({"bombaBloqueada": self.config["bombaBloqueada"]} if self.tem_bomba else {})},
+                 qos=1, retain=True)
 
     def publicar_telemetria(self):
         alvo_solo = 20.0 if self.seco else 55.0
@@ -127,6 +131,8 @@ class Estacao:
         if alvo == "bomba":
             if self.modo == "seguro":
                 return "modo_seguro"
+            if self.config["bombaBloqueada"]:
+                return "bomba_bloqueada"
             if duracao > self.config["duracaoMaxS"]:
                 return "intertravamento_duracao"
             if time.monotonic() - self.ultima_irrigacao < self.config["intervaloMinS"]:
