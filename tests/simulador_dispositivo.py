@@ -133,10 +133,12 @@ class Estacao:
                 return "modo_seguro"
             if self.config["bombaBloqueada"]:
                 return "bomba_bloqueada"
-            if duracao > self.config["duracaoMaxS"]:
-                return "intertravamento_duracao"
-            if time.monotonic() - self.ultima_irrigacao < self.config["intervaloMinS"]:
-                return "intertravamento_intervalo"
+            if cmd.get("origem") == "regra":  # intertravamento so na regra automatica; pessoa liga sempre
+                if duracao > self.config["duracaoMaxS"]:
+                    return "intertravamento_duracao"
+                if self.atuadores.get("bomba") == "on" or \
+                        time.monotonic() - self.ultima_irrigacao < self.config["intervaloMinS"]:
+                    return "intertravamento_intervalo"
         return None
 
     def executar(self, cmd):

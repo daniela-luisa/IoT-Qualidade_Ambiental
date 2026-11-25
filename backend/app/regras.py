@@ -50,8 +50,9 @@ def _ultimo_disparo(conn, dispositivo_id: str) -> float | None:
             SELECT extract(epoch FROM (now() - max(enviado_em))) AS segundos
             FROM comandos
             WHERE dispositivo_id = :d
-              AND origem = 'regra'
               AND acao = 'on'
+              AND (origem = 'regra'
+                   OR (alvo = 'bomba' AND estado NOT IN ('rejeitado', 'falhou', 'expirado')))
             """
         ),
         {"d": dispositivo_id},
