@@ -222,3 +222,24 @@ def test_decidir_adequado_e_qualquer_outro():
     assert decidir("adequado") == ("off", "off")
     assert decidir("desconhecido") == ("off", "off")
     assert decidir("") == ("off", "off")
+
+
+def test_bomba_manual_recente_segura_a_regra(ponte):
+    from app import comandos
+    ficar_online()
+    _telemetria_solo(5.0)
+    comandos.criar_comando(ponte, D, "bomba", "on", 10, origem="usuario")
+    regras.avaliar_todas(ponte)
+    assert _n_comandos() == 1
+    assert len(ponte.publicados) == 1
+
+
+def test_bomba_manual_rejeitada_nao_segura_a_regra(ponte):
+    from app import comandos
+    ficar_online()
+    _telemetria_solo(5.0)
+    c = comandos.criar_comando(ponte, D, "bomba", "on", 10, origem="usuario")
+    publicar(D, "confirmacao", {"v": 1, "commandId": c["comando_id"], "etapa": "recebido",
+                                "resultado": "rejeitado", "motivo": "modo_seguro"})
+    regras.avaliar_todas(ponte)
+    assert _n_comandos() == 2

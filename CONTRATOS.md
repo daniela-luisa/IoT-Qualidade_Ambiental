@@ -58,7 +58,7 @@ Explorer, as mensagens da placa aparecem com QoS 0.
 
 | `alvo` | `acao` | Campos | Faixa |
 |---|---|---|---|
-| `bomba` | `on` / `off` | `duracaoS` (só no `on`) | 1 a 15 s, padrão 3; nunca acima de `duracaoMaxS` |
+| `bomba` | `on` / `off` | `duracaoS` (só no `on`) | 1 a 15 s, padrão 3; com `origem` `regra`, nunca acima de `duracaoMaxS` |
 | `led` | `on` / `off` | `duracaoS` (só no `on`) | 1 a 60 s, padrão 8 |
 | `buzzer` | `on` / `off` | `duracaoS` (só no `on`) | 1 a 60 s, padrão 8 |
 | `config` | `set` | um ou mais parâmetros abaixo | todos **inteiros** (o firmware rejeita `30.5` com `valor_fora_da_faixa`) |
@@ -91,8 +91,8 @@ backend vê o `estado` publicado logo depois e a interface reflete). Finais alte
 
 | Código | Quando |
 |---|---|
-| `intertravamento_intervalo` | a bomba ligou há menos de `intervaloMinS` |
-| `intertravamento_duracao` | `duracaoS` acima de `duracaoMaxS` |
+| `intertravamento_intervalo` | só `origem` `regra`: a bomba está ligada ou ligou há menos de `intervaloMinS` (por qualquer origem) |
+| `intertravamento_duracao` | só `origem` `regra`: `duracaoS` acima de `duracaoMaxS` |
 | `modo_seguro` | placa em modo seguro, ou sem leitura válida do solo (bomba) |
 | `comando_duplicado` | `commandId` já recebido |
 | `alvo_invalido` | alvo desconhecido ou atuador que a placa não tem |

@@ -8,7 +8,7 @@
 #define MODO_SIMULADOR 0
 
 #define DEVICE_ID   "estacao-01"
-#define FW_VERSION  "1.6.0"
+#define FW_VERSION  "1.7.1"
 #define TEM_BOMBA   1
 
 #define MQTT_PREFIX "grupo5"
@@ -53,7 +53,7 @@
 #define SOLO_ADC_SECO     3200
 #define SOLO_ADC_MOLHADO  1200
 #define SOLO_ADC_MIN_VALIDO  100
-#define SOLO_ADC_MAX_VALIDO  4095
+#define SOLO_ADC_MAX_VALIDO  4095  // solo seco satura em 4095: e leitura valida, nao falha
 #define EXIGIR_SOLO_VALIDO   1
 #define IRRIGACAO_LOCAL      1
 
@@ -128,7 +128,8 @@ class Estacao {
   bool tick(uint32_t agora) {
     bool mudou = false;
     if (bomba) {
-      int lim = durBombaS < cfg.duracaoMaxS ? durBombaS : cfg.duracaoMaxS;
+      // acionamento manual nao tem o teto duracaoMaxS (so a faixa do contrato, 1..15 s)
+      int lim = (bombaManual || durBombaS < cfg.duracaoMaxS) ? durBombaS : cfg.duracaoMaxS;
       if (passou(agora, bombaIni, (uint32_t)lim * 1000UL)) { bomba = false; mudou = true; }
     }
     if (led && passou(agora, ledIni, (uint32_t)durLedS * 1000UL)) { led = false; mudou = true; }
@@ -162,7 +163,7 @@ class Estacao {
     if (isnan(soloPct) || soloPct >= (float)cfg.limiarSoloSecoPct) return false;
     if (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)) return false;
     int dur = BOMBA_DUR_PADRAO < cfg.duracaoMaxS ? BOMBA_DUR_PADRAO : cfg.duracaoMaxS;
-    bomba = true; bombaIni = agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true;
+    bomba = true; bombaIni = agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true; bombaManual = false;
     return true;
   }
 
@@ -197,6 +198,9 @@ class Estacao {
     bool ligar = strcmp(acao, "on") == 0;
     if (!ligar && strcmp(acao, "off") != 0) return rejeitar(r, "valor_fora_da_faixa");
     bool ehBomba = strcmp(alvo, "bomba") == 0;
+    // intertravamento (duracaoMaxS, intervaloMinS, bomba ja ligada) so vale para a regra automatica;
+    // comando de pessoa liga sempre. Modo seguro, solo invalido e bomba bloqueada continuam valendo para todos.
+    bool automatico = strcmp(origem, "regra") == 0;
 
     int dur = 0;
     if (ligar) {
@@ -207,9 +211,11 @@ class Estacao {
       else return rejeitar(r, "valor_fora_da_faixa");
       if (ehBomba) {
         if (dur < BOMBA_DUR_MIN || dur > BOMBA_DUR_MAX) return rejeitar(r, "valor_fora_da_faixa");
-        if (dur > cfg.duracaoMaxS) return rejeitar(r, "intertravamento_duracao");
-        if (bomba || (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)))
-          return rejeitar(r, "intertravamento_intervalo");
+        if (automatico) {
+          if (dur > cfg.duracaoMaxS) return rejeitar(r, "intertravamento_duracao");
+          if (bomba || (jaIrrigou && !passou(agora, bombaIni, (uint32_t)cfg.intervaloMinS * 1000UL)))
+            return rejeitar(r, "intertravamento_intervalo");
+        }
       } else if (dur < LED_DUR_MIN || dur > LED_DUR_MAX) {
         return rejeitar(r, "valor_fora_da_faixa");
       }
@@ -218,7 +224,12 @@ class Estacao {
     r.aceito = true;
     r.estadoMudou = true;
     if (ehBomba) {
-      if (ligar) { bomba = true; bombaIni = agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true; } else bomba = false;
+      if (ligar) {
+        // manual com a bomba ja rodando: reinicia a contagem sem o aviso (o rele nao desliga no meio)
+        bool rodando = bomba && passou(agora, bombaIni, 0);
+        bomba = true; bombaIni = rodando ? agora : agora + avisoBombaMs; durBombaS = dur; jaIrrigou = true;
+        bombaManual = !automatico;
+      } else bomba = false;
     } else if (strcmp(alvo, "led") == 0) {
       if (ligar) { led = true; ledIni = agora; durLedS = dur; } else led = false;
     } else {
@@ -235,6 +246,7 @@ class Estacao {
   uint32_t bombaIni = 0, ledIni = 0, buzzerIni = 0, manualDesde = 0;
   int durBombaS = 0, durLedS = 0, durBuzzerS = 0;
   bool jaIrrigou = false;
+  bool bombaManual = false;
   int falhasSeguidas = 0;
   char vistos[N_VISTOS][40] = {};
   int proximoVisto = 0;
@@ -661,8 +673,8 @@ void lerEPublicar() {
   if (!soloValido && est.exigirSolo && est.temBomba) Serial.println("[solo] sem leitura valida: bomba bloqueada (confira o fio AO no GPIO 35)");
   bool irrigou = false;
 #if IRRIGACAO_LOCAL
-  irrigou = est.irrigarSeSeco(solo, millis());
-  if (irrigou) Serial.printf("[irrigacao] solo %.1f%% < limiar %d%%: bomba ligada pela regra local\n", solo, est.cfg.limiarSoloSecoPct);
+  if (!mqtt.connected()) irrigou = est.irrigarSeSeco(solo, millis());  // com broker quem decide e a regra do backend
+  if (irrigou) Serial.printf("[irrigacao] solo %.1f%% < limiar %d%%: bomba ligada pela regra local (sem broker)\n", solo, est.cfg.limiarSoloSecoPct);
 #endif
   if (mudouModo || mudouCond || irrigou) { aplicarSaidas(); publicarEstado(); }
 }
