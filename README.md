@@ -13,7 +13,7 @@
 
 Grupo 5 - Qualidade Ambiental.
 
-Construção de uma pequena estação ambiental conectada, que mede variáveis do ambiente relevantes para o crescimento de plantas, classifica a condição do local e sinaliza a condição por LED e buzzer.
+Construção de estações ambientais conectadas que medem as variáveis do ambiente relevantes para o crescimento de plantas, classificam a condição do local, sinalizam por LED e buzzer e irrigam o vaso com uma bomba — com backend, banco de dados e interface web (N3). Na N1, era uma única estação que só sinalizava a condição por LED e buzzer.
 
 ## Problema
 
@@ -25,7 +25,9 @@ Pessoas que cultivam plantas em casa, hortas domésticas ou pequenas estufas, e 
 
 ## Objetivo do Projeto
 
-Construir um dispositivo com ESP32 que:
+**N3:** transformar a estação da N1 em um produto IoT completo — duas estações ESP32 (`estacao-01` com bomba e `estacao-02` sem bomba), backend que valida, guarda e decide, banco com histórico, interface web com login e irrigação automática com confirmação do dispositivo (detalhes em [Como funciona hoje (N3)](#como-funciona-hoje-n3)).
+
+**N1 (objetivo original):** construir um dispositivo com ESP32 que:
 
 - leia pelo menos duas variáveis ambientais relevantes para plantas (temperatura, umidade do ar, umidade do solo e/ou luminosidade);
 - classifique a condição do ambiente para o crescimento da planta;
@@ -66,13 +68,15 @@ Tópicos `grupo5/{deviceId}/…` com JSON versionado (`"v":1`) — detalhes e ex
 | `confirmacao` | dispositivo | `recebido` (ok ou `rejeitado` + motivo) → `executado` |
 | `evento` | dispositivo | botão BOOT apertado (`alarme` silenciado) e, ao reconectar, as mudanças de bomba, modo e condição que aconteceram sem conexão (as leituras desse período vão pela `telemetria`, com a hora original) |
 
+**QoS:** o contrato previa QoS 1 para estado, status e confirmação, mas o firmware usa a biblioteca PubSubClient, que só publica em QoS 0. Só o LWT (`offline`) e a assinatura do tópico `comando` usam QoS 1; o backend publica `comando` em QoS 1.
+
 **Ciclo do comando:** `enviado` → `recebido` → `executado` → `confirmado` (o backend promove para confirmado ao ver o `estado` publicado logo depois). Finais alternativos: `rejeitado` (com motivo do catálogo), `falhou` (broker fora) e `expirado` (sem resposta em `COMANDO_TIMEOUT_S`).
 
 ### Efeitos físicos (atuadores)
 
 | Atuador | Efeito | Duração | Quem aciona |
 |---|---|---|---|
-| **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 3), desliga sozinha; nunca acima de `duracaoMaxS`. O relé só fecha 1 s depois do "on", após 2 bipes de aviso | Admin, regra remota do backend ou regra local da placa; **travada** pelo backend com o reservatório vazio |
+| **Bomba** (relé no GPIO 27) | Irriga o vaso | 1 a 15 s (padrão 3), desliga sozinha; na irrigação automática, nunca acima de `duracaoMaxS`. O relé só fecha 1 s depois do "on", após 2 bipes de aviso | Admin, regra remota do backend ou, só sem conexão com o broker, regra local da placa; **travada** pelo backend com o reservatório vazio |
 | **LED** (GPIO 26) | Alerta visual | 1 a 60 s (padrão 8) por comando | Admin e backend (alarmes). Fora isso: aceso sem conexão com a planta em condição ruim, piscando com a estação com problema (tabela abaixo) |
 | **Buzzer** (GPIO 25, `tone` 1 kHz) | Alerta sonoro | 1 a 60 s (padrão 8) | Admin e backend (alarme de reservatório vazio, estação sem bomba). Sozinho, só os 2 bipes antes da bomba |
 | **Botão BOOT** (GPIO 0, da própria placa) | Silencia o alarme | — | Pessoa ao lado da planta: apaga LED/buzzer e avisa o backend, que para de repetir o alarme |
@@ -114,7 +118,8 @@ Toda vez que a bomba liga ou desliga de fato (inclusive pela regra local da plac
 
 - **Condição:** `inadequado` se solo abaixo de `limiarSoloSecoPct`, solo sem leitura ou temperatura fora de 10–32 °C; `atencao` se luz abaixo de 20 %; senão `adequado`.
 - **Modos:** `automatico` (normal); `manual` por 60 s depois de qualquer comando de pessoa (a irrigação automática — local e remota — pausa); `seguro` no boot e após 3 falhas seguidas de sensor (bomba desligada e só aceita comandos de desligar/config).
-- **Segurança da bomba:** só liga com leitura válida do solo; intervalo mínimo (`intervaloMinS`) entre irrigações; teto de duração; 2 bipes de aviso 1 s antes; travada com o reservatório vazio; desligada durante OTA; relé em estado desligado desde o boot.
+- **Irrigação local:** a placa só irriga sozinha (regra local) quando está **sem conexão com o broker**; conectada, quem decide é a regra do backend.
+- **Segurança da bomba:** só liga com leitura válida do solo; 2 bipes de aviso 1 s antes; travada com o reservatório vazio; desligada durante OTA; relé em estado desligado desde o boot. Na irrigação automática (regra do backend ou regra local) valem também o intervalo mínimo (`intervaloMinS`) entre irrigações e o teto de duração (`duracaoMaxS`); o comando de uma pessoa (admin) liga a bomba mesmo assim, dentro da faixa de 1 a 15 s, e, se a bomba já estiver ligada, reinicia a contagem sem repetir o aviso.
 
 ### Regra de irrigação remota (backend)
 
@@ -172,13 +177,13 @@ Ajuste `DEVICE_ID` (`estacao-01` / `estacao-02`) e `TEM_BOMBA` (0 na placa que n
 
 **Atualização remota por OTA (R17):** com a placa já gravada uma vez pela USB e ligada na mesma rede do notebook:
 
-1. Mude `FW_VERSION` no `.ino` (ex.: `1.6.0` → `1.6.1`) para enxergar a troca.
+1. Mude `FW_VERSION` no `.ino` (ex.: `1.7.1` → `1.7.2`) para enxergar a troca.
 2. *Tools → Port →* escolha a **porta de rede** `estacao-01 at <IP>` (aparece sozinha via mDNS; pode levar uns segundos).
 3. **Upload** e digite a senha `OTA_PASSWORD` do `secrets.h`. A bomba é desligada durante a atualização.
 4. A placa reinicia com o firmware novo: o cartão no painel mostra a versão nova e o backend registra o evento
    `firmware_atualizado` (versão antiga → nova).
 
-**Testes** (precisa de um PostgreSQL de teste; o CI faz isso sozinho):
+**Testes** (180 casos em 6 arquivos: `test_contrato`, `test_ciclo_comando`, `test_api`, `test_regra`, `test_recursos` e `test_reservatorio`; precisa de um PostgreSQL de teste, o CI faz isso sozinho):
 
 ```bash
 pip install -r backend/requirements-dev.txt
@@ -214,7 +219,7 @@ As credenciais de Wi-Fi (`WIFI_SSID`, `WIFI_PASSWORD`), o IP do broker (`MQTT_HO
 
 Protótipo montado com o ESP32 conectado aos sensores e atuadores via protoboard: DHT11 no GPIO14, sensor de solo e módulo LDR (saída analógica, ADC1) no GPIO35 e GPIO34, buzzer no GPIO25, LED (com resistor em série) no GPIO26, relé da bomba no GPIO27 e o botão BOOT da placa (GPIO0) para silenciar o alarme. A imagem acima é a simulação no Wokwi da N1.
 
-**Status de validação:** o firmware foi validado em simulação (Wokwi, via Wokwi para VS Code com compilação local em PlatformIO) e também testado no protótipo físico montado em sala, já com os módulos reais de solo e luminosidade (saída digital) e o DHT11. A validação completa de ponta a ponta no físico — sensores + backend automático rodando juntos — ainda está em andamento.
+**Status de validação:** o firmware foi validado em simulação (Wokwi, via Wokwi para VS Code com compilação local em PlatformIO; o diagrama da N3 está em [`docs/wokwi_n3/`](docs/wokwi_n3/)) e testado no protótipo físico montado em sala, com o DHT11, os módulos de solo e luminosidade lidos pela saída analógica e a bomba acionada pelo relé. Os cenários de falha com a placa física estão descritos em [`docs/falhas.md`](docs/falhas.md).
 
 ## Arquitetura específica
 
@@ -312,17 +317,23 @@ python backend/decisor.py
 
 | O quê | Versão |
 |---|---|
-| Firmware (`FW_VERSION`) | 1.6.0 |
+| Firmware (`FW_VERSION`) | 1.7.1 |
 | Contrato MQTT | v1.1 (campo `v` = 1) |
-| Produto defendido na N3 | tag **`n3-v1.0`** no GitHub |
+| Produto defendido na N3 | tag **`v1.0`** no GitHub |
 
-A versão defendida no seminário de 01/12 é a da tag `n3-v1.0` (release no GitHub). Para criar a tag depois do
+A versão defendida no seminário de 01/12 é a da tag `v1.0` (release no GitHub). Para criar a tag depois do
 último commit:
 
 ```bash
-git tag -a n3-v1.0 -m "Produto defendido na N3 (fw 1.6.0, contrato v1.1)"
-git push origin n3-v1.0
+git tag -a v1.0 -m "Produto defendido na N3 (fw 1.7.1, contrato v1.1)"
+git push origin v1.0
 ```
+
+## Limitações conhecidas
+
+- **Sem notificação externa (R15):** o envio de e-mail por SMTP foi retirado em 24/11 (commit "refact: remove alerts"), junto com o `notify.py` e a tabela `notificacoes`. O banco tem 7 tabelas. Hoje a estação offline e o solo seco aparecem só nos alertas do painel e no LED/buzzer da estação.
+- **QoS 0 no firmware:** a PubSubClient só publica em QoS 0 (ver [Comunicação](#comunicação-contrato-mqtt-v11)); estado e status são retidos e republicados a cada 30 s, mas uma confirmação perdida não é reenviada.
+- **Sem TLS no MQTT:** o Mosquitto aceita conexões anônimas na porta 1883, na rede local.
 
 ## Reaproveitamento e autoria
 
@@ -337,8 +348,6 @@ Conforme a seção 4.2 dos requisitos da N3, o que foi aproveitado e de onde:
 - **Backend:** FastAPI, Uvicorn, paho-mqtt, SQLAlchemy, psycopg, PyJWT e bcrypt (versões em `backend/requirements.txt`).
 - **Interface:** Chart.js 4.4.7 (cópia local em `web/vendor/`); HTML, CSS e JavaScript próprios.
 - **Infraestrutura:** imagens oficiais do Eclipse Mosquitto e do PostgreSQL no Docker Compose.
-- **Assistente de IA:** partes do código e da documentação foram escritas com apoio de um assistente de IA
-  (Claude Code), revisadas, testadas e adaptadas pela equipe. Cada integrante consegue explicar as partes que usa.
 
 ## Backlog atualizado
 
@@ -376,7 +385,7 @@ Conforme a seção 4.2 dos requisitos da N3, o que foi aproveitado e de onde:
 
 ### Risco 1 — Calibração dos sensores
 
-Os módulos de umidade do solo e luminosidade têm sensibilidade ajustável fisicamente (potenciômetro no próprio módulo). Se a sensibilidade não estiver bem ajustada, a leitura digital (HIGH/LOW) pode não refletir corretamente a condição real do ambiente — por exemplo classificando solo levemente úmido como "seco". Esse ajuste precisa ser conferido fisicamente antes da demonstração, testando com o solo/luz em condições conhecidas.
+Na N3 os módulos de solo e luminosidade são lidos pela saída analógica e convertidos em %. A conversão do solo depende da calibração `SOLO_ADC_SECO`/`SOLO_ADC_MOLHADO` do firmware: se ela não corresponder ao sensor e ao substrato usados, a umidade em % pode não refletir a condição real — por exemplo, classificando solo levemente úmido como "seco" e irrigando sem necessidade. A calibração precisa ser conferida no sensor real (no ar e na água) antes da demonstração. (Na N1, o mesmo risco valia para o ajuste do potenciômetro da saída digital.)
 
 ### Risco 2 — Baud rate do monitor serial (identificado na Aula 06)
 
